@@ -38,19 +38,12 @@ class CockpitAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    private val knownCockpitPackages = setOf(
-        "retail.grameenphone.com.gpretail",
-        "com.grameenphone.cockpit"
-    )
-
     private fun isLikelyCockpitPackage(packageName: String): Boolean {
-        if (knownCockpitPackages.contains(packageName)) return true
         return try {
             val label = packageManager.getApplicationLabel(
                 packageManager.getApplicationInfo(packageName, 0)
             ).toString()
-            label.contains("Cockpit", ignoreCase = true) ||
-                    label.contains("ককপিট", ignoreCase = true)
+            label.contains("Cockpit", ignoreCase = true)
         } catch (_: Exception) {
             false
         }
@@ -59,96 +52,102 @@ class CockpitAccessibilityService : AccessibilityService() {
     private fun drive() {
         if (!DriverSession.running) return
         val root = rootInActiveWindow ?: return
+        val currentPackage = root.packageName?.toString().orEmpty()
+        if (currentPackage.isBlank() || !isLikelyCockpitPackage(currentPackage)) return
 
-        // If the normal Cockpit login form is visible, use only the credentials
-        // that the user explicitly saved in this app. Security prompts such as
-        // Samsung Pass/biometrics are never bypassed.
         if (containsAny(root, listOf("আপনার ID দিয়ে লগ ইন করুন", "আপনার পাসওয়ার্ড দিন"))) {
             if (fillLogin(root)) {
                 DriverSession.state = DriverState.OPENING
                 DriverSession.lastMessage = "Saved Cockpit credentials দেওয়া হয়েছে"
+            } else {
+                DriverSession.state = DriverState.OPENING
+                DriverSession.lastMessage = "Cockpit login screen—credentials check করুন"
+            }
+            return
+        }
+
+        // Dashboard: the supplied Cockpit screen has two editable fields:
+        // customer number first, amount second. The old prototype only tried
+        // to fill the amount after the phone was already present, so it stopped
+        // on this screen. Fill both fields explicitly now.
+        if (containsAny(root, listOf("গ্রাহকের নাম্বার", "পরিমাণ", "পাওয়ারলোড", "পাওয়ারলোড"))) {
+            if (fillRechargeFields(root)) {
+                DriverSession.state = DriverState.ENTERING_AMOUNT
+                DriverSession.lastMessage = "নম্বর ও পরিমাণ বসানো হয়েছে"
+                handler.postDelayed({ drive() }, 450)
+                return
+            }
+
+            if (containsText(root, DriverSession.phone) && containsText(root, DriverSession.amount)) {
+                DriverSession.state = DriverState.TAP_POWERLOAD
+                DriverSession.lastMessage = "পাওয়ারলোড বাটন চাপা হচ্ছে"
+                clickText(root, listOf("পাওয়ারলোড", "পাওয়ারলোড"))
                 return
             }
         }
 
-        when {
-            containsAny(root, listOf("পাওয়ারলোড", "পাওয়ারলোড")) &&
-                    containsText(root, DriverSession.phone) -> {
-                if (fillAmountIfNeeded(root)) return
-                DriverSession.state = DriverState.TAP_POWERLOAD
-                DriverSession.lastMessage = "পাওয়ারলোড বাটন খোঁজা হচ্ছে"
-                clickText(root, listOf("পাওয়ারলোড", "পাওয়ারলোড"))
-            }
+        if (containsAny(root, listOf("পরবর্তী")) && containsText(root, DriverSession.phone)) {
+            DriverSession.state = DriverState.TAP_NEXT
+            DriverSession.lastMessage = "পরবর্তী চাপা হচ্ছে"
+            clickText(root, listOf("পরবর্তী"))
+            return
+        }
 
-            containsAny(root, listOf("পরবর্তী")) &&
-                    containsText(root, DriverSession.phone) -> {
-                DriverSession.state = DriverState.TAP_NEXT
-                DriverSession.lastMessage = "পরবর্তী চাপা হচ্ছে"
-                clickText(root, listOf("পরবর্তী"))
-            }
+        if (containsAny(root, listOf("রিচার্জ নিশ্চিত করুন")) && containsText(root, DriverSession.phone)) {
+            DriverSession.state = DriverState.CONFIRMATION
+            DriverSession.lastMessage = "Confirmation screen পাওয়া গেছে"
+            return
+        }
 
-            containsAny(root, listOf("রিচার্জ নিশ্চিত করুন", "রিচার্জ নিশ্চিত করুন")) &&
-                    containsText(root, DriverSession.phone) -> {
-                DriverSession.state = DriverState.CONFIRMATION
-                DriverSession.lastMessage = "Confirmation screen পাওয়া গেছে"
-            }
-
-            containsAny(root, listOf("ERS PIN দিন")) -> {
-                if (fillErsPin(root)) {
-                    DriverSession.state = DriverState.SUBMITTING
-                    DriverSession.lastMessage = "Saved ERS PIN দেওয়া হয়েছে"
-                    return
-                }
+        if (containsAny(root, listOf("ERS PIN দিন"))) {
+            if (fillErsPin(root)) {
+                DriverSession.state = DriverState.SUBMITTING
+                DriverSession.lastMessage = "Saved ERS PIN দেওয়া হয়েছে"
+                handler.postDelayed({ drive() }, 450)
+            } else {
                 DriverSession.state = DriverState.WAITING_PIN
                 DriverSession.lastMessage = "ERS PIN field পাওয়া গেছে, কিন্তু fill করা যায়নি"
-                return
             }
+            return
+        }
 
-            containsAny(root, listOf("সফল", "সফলভাবে", "Success", "Transaction Details")) -> {
-                DriverSession.state = DriverState.SUCCESS
-                DriverSession.lastMessage = "Recharge success screen পাওয়া গেছে"
-                DriverSession.running = false
-                showToast("Recharge Success")
-            }
+        if (containsAny(root, listOf("নিশ্চিত করুন", "নিশ্চিতকরন", "Confirm")) &&
+            (DriverSession.state == DriverState.SUBMITTING || DriverSession.state == DriverState.WAITING_PIN)) {
+            DriverSession.state = DriverState.SUBMITTING
+            DriverSession.lastMessage = "নিশ্চিত করুন চাপা হচ্ছে"
+            clickText(root, listOf("নিশ্চিত করুন", "নিশ্চিতকরন", "Confirm"))
+            return
+        }
 
-            containsAny(root, listOf("ব্যর্থ", "Failed", "failure", "দুঃখিত")) -> {
-                DriverSession.state = DriverState.FAILED
-                DriverSession.lastMessage = "Recharge failed screen পাওয়া গেছে"
-                DriverSession.running = false
-                showToast("Recharge Failed")
-            }
+        if (containsAny(root, listOf("সফল", "সফলভাবে", "Success", "Transaction Details"))) {
+            DriverSession.state = DriverState.SUCCESS
+            DriverSession.lastMessage = "Recharge success screen পাওয়া গেছে"
+            DriverSession.running = false
+            showToast("Recharge Success")
+            return
+        }
+
+        if (containsAny(root, listOf("ব্যর্থ", "Failed", "failure", "দুঃখিত"))) {
+            DriverSession.state = DriverState.FAILED
+            DriverSession.lastMessage = "Recharge failed screen পাওয়া গেছে"
+            DriverSession.running = false
+            showToast("Recharge Failed")
         }
     }
 
-    private fun fillAmountIfNeeded(root: AccessibilityNodeInfo): Boolean {
-        // Prefer editable fields. The first field that already contains the target
-        // number is left alone; the next suitable editable field gets the amount.
+    private fun fillRechargeFields(root: AccessibilityNodeInfo): Boolean {
         val edits = ArrayList<AccessibilityNodeInfo>()
         collectEditable(root, edits)
+        if (edits.size < 2) return false
 
-        var phoneFound = false
-        for (node in edits) {
-            val text = node.text?.toString()?.trim().orEmpty()
-            if (text.contains(DriverSession.phone)) {
-                phoneFound = true
-                continue
-            }
-            if (phoneFound && (text.isBlank() || text == "0" || text != DriverSession.amount)) {
-                val args = Bundle()
-                args.putCharSequence(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    DriverSession.amount
-                )
-                if (node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
-                    DriverSession.state = DriverState.ENTERING_AMOUNT
-                    DriverSession.lastMessage = "রিচার্জের পরিমাণ বসানো হয়েছে"
-                    return true
-                }
-            }
-        }
-        return false
+        var phoneSet = containsText(root, DriverSession.phone)
+        var amountSet = containsText(root, DriverSession.amount)
+
+        if (!phoneSet && setText(edits[0], DriverSession.phone)) phoneSet = true
+        if (!amountSet && setText(edits[1], DriverSession.amount)) amountSet = true
+
+        return phoneSet && amountSet
     }
-
 
     private fun fillLogin(root: AccessibilityNodeInfo): Boolean {
         val id = SecureStore.get(this, "cockpit_id")
