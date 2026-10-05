@@ -175,15 +175,39 @@ class CockpitAccessibilityService : AccessibilityService() {
 
     private fun setTextRobust(node: AccessibilityNodeInfo, value: String): Boolean {
         // Try ACTION_SET_TEXT first
-        if (setText(node, value)) return true
-        // Fallback: click to focus, then set text
+        if (setText(node, value)) {
+            Thread.sleep(200)
+            if (node.text?.toString() == value) return true
+        }
+        // Fallback 1: click to focus, then set text
         try {
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            Thread.sleep(300)
-            if (setText(node, value)) return true
-            // Last resort: focus then set
+            Thread.sleep(400)
+            if (setText(node, value)) {
+                Thread.sleep(200)
+                if (node.text?.toString() == value) return true
+            }
+        } catch (_: Exception) { }
+        // Fallback 2: clipboard paste
+        try {
+            val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("recharge", value))
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            Thread.sleep(400)
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             Thread.sleep(300)
+            // Select all then paste
+            node.performAction(AccessibilityNodeInfo.ACTION_SELECT_ALL)
+            Thread.sleep(200)
+            if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                Thread.sleep(300)
+                if (node.text?.toString()?.contains(value) == true) return true
+            }
+        } catch (_: Exception) { }
+        // Fallback 3: try setText one more time after focus
+        try {
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            Thread.sleep(400)
             return setText(node, value)
         } catch (_: Exception) {
             return false
