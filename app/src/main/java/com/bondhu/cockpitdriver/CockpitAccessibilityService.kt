@@ -38,12 +38,19 @@ class CockpitAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    private val knownCockpitPackages = setOf(
+        "retail.grameenphone.com.gpretail",
+        "com.grameenphone.cockpit"
+    )
+
     private fun isLikelyCockpitPackage(packageName: String): Boolean {
+        if (knownCockpitPackages.contains(packageName)) return true
         return try {
             val label = packageManager.getApplicationLabel(
                 packageManager.getApplicationInfo(packageName, 0)
             ).toString()
-            label.contains("Cockpit", ignoreCase = true)
+            label.contains("Cockpit", ignoreCase = true) ||
+                    label.contains("ককপিট", ignoreCase = true)
         } catch (_: Exception) {
             false
         }
