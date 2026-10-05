@@ -150,10 +150,44 @@ class CockpitAccessibilityService : AccessibilityService() {
         var phoneSet = containsText(root, DriverSession.phone)
         var amountSet = containsText(root, DriverSession.amount)
 
-        if (!phoneSet && setText(edits[0], DriverSession.phone)) phoneSet = true
-        if (!amountSet && setText(edits[1], DriverSession.amount)) amountSet = true
+        // Find phone and amount fields by hint text for accuracy
+        var phoneField: AccessibilityNodeInfo? = null
+        var amountField: AccessibilityNodeInfo? = null
+        for (e in edits) {
+            val hint = e.hintText?.toString().orEmpty()
+            val text = e.text?.toString().orEmpty()
+            if (hint.contains("পরিমাণ") || hint.contains("পরিমান") || hint.contains("amount", ignoreCase = true)) {
+                amountField = e
+            } else if (phoneField == null) {
+                phoneField = e
+            }
+        }
+        if (phoneField == null) phoneField = edits[0]
+        if (amountField == null) {
+            amountField = edits.firstOrNull { it != phoneField } ?: edits[1]
+        }
+
+        if (!phoneSet && setTextRobust(phoneField, DriverSession.phone)) phoneSet = true
+        if (!amountSet && setTextRobust(amountField, DriverSession.amount)) amountSet = true
 
         return phoneSet && amountSet
+    }
+
+    private fun setTextRobust(node: AccessibilityNodeInfo, value: String): Boolean {
+        // Try ACTION_SET_TEXT first
+        if (setText(node, value)) return true
+        // Fallback: click to focus, then set text
+        try {
+            node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            Thread.sleep(300)
+            if (setText(node, value)) return true
+            // Last resort: focus then set
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            Thread.sleep(300)
+            return setText(node, value)
+        } catch (_: Exception) {
+            return false
+        }
     }
 
     private fun fillLogin(root: AccessibilityNodeInfo): Boolean {
