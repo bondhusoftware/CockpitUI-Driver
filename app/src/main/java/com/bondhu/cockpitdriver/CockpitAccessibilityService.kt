@@ -13,7 +13,6 @@ class CockpitAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastActionAt = 0L
-    private val cockpitPackage = "retail.grameenphone.com.gpretail"
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -22,7 +21,8 @@ class CockpitAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {
         if (!DriverSession.running) return
-        if (event?.packageName?.toString() != cockpitPackage) return
+        val foregroundPackage = event?.packageName?.toString().orEmpty()
+        if (foregroundPackage.isBlank() || !isLikelyCockpitPackage(foregroundPackage)) return
 
         // Give Cockpit a moment to finish rendering before acting.
         handler.removeCallbacksAndMessages(null)
@@ -36,6 +36,17 @@ class CockpitAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
+    }
+
+    private fun isLikelyCockpitPackage(packageName: String): Boolean {
+        return try {
+            val label = packageManager.getApplicationLabel(
+                packageManager.getApplicationInfo(packageName, 0)
+            ).toString()
+            label.contains("Cockpit", ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun drive() {

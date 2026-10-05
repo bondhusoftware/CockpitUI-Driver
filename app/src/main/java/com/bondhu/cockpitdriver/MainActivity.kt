@@ -23,7 +23,6 @@ class MainActivity : Activity() {
     private lateinit var runButton: Button
     private lateinit var stopButton: Button
 
-    private val cockpitPackage = "retail.grameenphone.com.gpretail"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -167,10 +166,10 @@ class MainActivity : Activity() {
         saveCredentials()
         DriverSession.start(phone, amount)
 
-        val launch = packageManager.getLaunchIntentForPackage(cockpitPackage)
+        val launch = findCockpitLaunchIntent()
         if (launch == null) {
-            toast("Cockpit ইনস্টল করা নেই")
-            DriverSession.stop("Cockpit পাওয়া যায়নি")
+            toast("Cockpit অ্যাপটি শনাক্ত করা যাচ্ছে না")
+            DriverSession.stop("Cockpit launch activity পাওয়া যায়নি")
             refreshUi()
             return
         }
@@ -178,6 +177,26 @@ class MainActivity : Activity() {
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         startActivity(launch)
         refreshUi()
+    }
+
+    private fun findCockpitLaunchIntent(): Intent? {
+        val pm = packageManager
+        val intent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val activities = pm.queryIntentActivities(intent, 0)
+        val cockpit = activities.firstOrNull { info ->
+            val label = info.loadLabel(pm)?.toString()?.trim().orEmpty()
+            label.equals("Cockpit", ignoreCase = true) ||
+                    label.contains("Cockpit", ignoreCase = true)
+        }
+        return cockpit?.let {
+            Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                setClassName(it.activityInfo.packageName, it.activityInfo.name)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        }
     }
 
     private fun isAccessibilityEnabled(): Boolean {
