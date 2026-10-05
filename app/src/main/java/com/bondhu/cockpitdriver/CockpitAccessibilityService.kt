@@ -196,9 +196,14 @@ class CockpitAccessibilityService : AccessibilityService() {
             Thread.sleep(400)
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             Thread.sleep(300)
-            // Select all then paste
-            node.performAction(AccessibilityNodeInfo.ACTION_SELECT_ALL)
-            Thread.sleep(200)
+            // Select all via SET_SELECTION then paste
+            try {
+                val selectArgs = Bundle()
+                selectArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+                selectArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, node.text?.length ?: 999)
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectArgs)
+                Thread.sleep(200)
+            } catch (_: Exception) { }
             if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
                 Thread.sleep(300)
                 if (node.text?.toString()?.contains(value) == true) return true
