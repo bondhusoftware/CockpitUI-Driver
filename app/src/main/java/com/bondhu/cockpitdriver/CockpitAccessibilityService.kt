@@ -253,11 +253,12 @@ class CockpitAccessibilityService : AccessibilityService() {
             val node = findNodeByText(root, candidate) ?: continue
             var current: AccessibilityNodeInfo? = node
             repeat(5) {
-                if (current?.isClickable == true) {
+                val c = current
+                if (c?.isClickable == true) {
                     lastActionAt = now
-                    return current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return c.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 }
-                current = current?.parent
+                current = c?.parent
             }
             if (node.isClickable) {
                 lastActionAt = now
