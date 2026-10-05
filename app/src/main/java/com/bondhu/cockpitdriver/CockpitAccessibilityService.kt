@@ -49,8 +49,7 @@ class CockpitAccessibilityService : AccessibilityService() {
             val label = packageManager.getApplicationLabel(
                 packageManager.getApplicationInfo(packageName, 0)
             ).toString()
-            label.contains("Cockpit", ignoreCase = true) ||
-                    label.contains("ককপিট", ignoreCase = true)
+            label.contains("Cockpit", ignoreCase = true)
         } catch (_: Exception) {
             false
         }
@@ -73,30 +72,33 @@ class CockpitAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Dashboard: the supplied Cockpit screen has two editable fields:
-        // customer number first, amount second. The old prototype only tried
-        // to fill the amount after the phone was already present, so it stopped
-        // on this screen. Fill both fields explicitly now.
-        if (containsAny(root, listOf("গ্রাহকের নাম্বার", "পরিমাণ", "পাওয়ারলোড", "পাওয়ারলোড"))) {
-            if (fillRechargeFields(root)) {
+        // Dashboard: fill number + amount, then SKIP Powerload and tap Next (পরবর্তী).
+        // Previous bug: once both fields were filled, fillRechargeFields() returned true
+        // and we re-posted drive() forever, so the Next branch was never reached.
+        val onDashboard = containsAny(root, listOf("পরবর্তী")) &&
+            containsAny(root, listOf("পাওয়ারলোড", "ফ্লেক্সিরিটেইল"))
+        if (onDashboard) {
+            val phoneSet = containsText(root, DriverSession.phone)
+            val amountSet = containsText(root, DriverSession.amount)
+
+            if (!phoneSet || !amountSet) {
+                fillRechargeFields(root)
                 DriverSession.state = DriverState.ENTERING_AMOUNT
-                DriverSession.lastMessage = "নম্বর ও পরিমাণ বসানো হয়েছে"
+                DriverSession.lastMessage = "নম্বর ও পরিমাণ বসানো হচ্ছে"
                 handler.postDelayed({ drive() }, 450)
                 return
             }
 
-            if (containsText(root, DriverSession.phone) && containsText(root, DriverSession.amount)) {
-                DriverSession.state = DriverState.TAP_POWERLOAD
-                DriverSession.lastMessage = "পাওয়ারলোড বাটন চাপা হচ্ছে"
-                clickText(root, listOf("পাওয়ারলোড", "পাওয়ারলোড"))
+            if (DriverSession.nextAttempts >= 3) {
+                DriverSession.stop("পরবর্তী চাপা যায়নি — manually চাপুন")
                 return
             }
-        }
-
-        if (containsAny(root, listOf("পরবর্তী")) && containsText(root, DriverSession.phone)) {
             DriverSession.state = DriverState.TAP_NEXT
-            DriverSession.lastMessage = "পরবর্তী চাপা হচ্ছে"
-            clickText(root, listOf("পরবর্তী"))
+            DriverSession.lastMessage = "পাওয়ারলোড skip করে পরবর্তী চাপা হচ্ছে"
+            if (clickText(root, listOf("পরবর্তী"))) {
+                DriverSession.nextAttempts++
+            }
+            handler.postDelayed({ drive() }, 900)
             return
         }
 
@@ -150,12 +152,10 @@ class CockpitAccessibilityService : AccessibilityService() {
         var phoneSet = containsText(root, DriverSession.phone)
         var amountSet = containsText(root, DriverSession.amount)
 
-        // Find phone and amount fields by hint text for accuracy
         var phoneField: AccessibilityNodeInfo? = null
         var amountField: AccessibilityNodeInfo? = null
         for (e in edits) {
             val hint = e.hintText?.toString().orEmpty()
-            val text = e.text?.toString().orEmpty()
             if (hint.contains("পরিমাণ") || hint.contains("পরিমান") || hint.contains("amount", ignoreCase = true)) {
                 amountField = e
             } else if (phoneField == null) {
@@ -174,12 +174,10 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     private fun setTextRobust(node: AccessibilityNodeInfo, value: String): Boolean {
-        // Try ACTION_SET_TEXT first
         if (setText(node, value)) {
             Thread.sleep(200)
             if (node.text?.toString() == value) return true
         }
-        // Fallback 1: click to focus, then set text
         try {
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             Thread.sleep(400)
@@ -188,7 +186,6 @@ class CockpitAccessibilityService : AccessibilityService() {
                 if (node.text?.toString() == value) return true
             }
         } catch (_: Exception) { }
-        // Fallback 2: clipboard paste
         try {
             val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
             clipboard.setPrimaryClip(android.content.ClipData.newPlainText("recharge", value))
@@ -196,7 +193,6 @@ class CockpitAccessibilityService : AccessibilityService() {
             Thread.sleep(400)
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             Thread.sleep(300)
-            // Select all via SET_SELECTION then paste
             try {
                 val selectArgs = Bundle()
                 selectArgs.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
@@ -209,7 +205,6 @@ class CockpitAccessibilityService : AccessibilityService() {
                 if (node.text?.toString()?.contains(value) == true) return true
             }
         } catch (_: Exception) { }
-        // Fallback 3: try setText one more time after focus
         try {
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             Thread.sleep(400)
@@ -351,8 +346,22 @@ class CockpitAccessibilityService : AccessibilityService() {
                 lastActionAt = now
                 return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
+            // Fallback: no clickable node exposed -> tap the centre of its bounds.
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            if (!r.isEmpty) {
+                lastActionAt = now
+                return tapAt(r.centerX().toFloat(), r.centerY().toFloat())
+            }
         }
         return false
+    }
+
+    private fun tapAt(x: Float, y: Float): Boolean {
+        val path = android.graphics.Path().apply { moveTo(x, y) }
+        val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 60)
+        val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
+        return dispatchGesture(gesture, null, null)
     }
 
     private fun showToast(message: String) {

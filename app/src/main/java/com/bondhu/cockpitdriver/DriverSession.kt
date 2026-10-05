@@ -5,12 +5,14 @@ object DriverSession {
     @Volatile var phone: String = ""
     @Volatile var amount: String = ""
     @Volatile var state: DriverState = DriverState.IDLE
+    @Volatile var nextAttempts: Int = 0
     @Volatile var lastMessage: String = "প্রস্তুত"
 
     fun start(phoneNumber: String, rechargeAmount: String) {
         phone = phoneNumber
         amount = rechargeAmount
         running = true
+        nextAttempts = 0
         state = DriverState.OPENING
         lastMessage = "Cockpit খোলা হচ্ছে…"
     }
