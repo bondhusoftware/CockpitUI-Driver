@@ -78,6 +78,10 @@ class CockpitAccessibilityService : AccessibilityService() {
         val onDashboard = containsAny(root, listOf("পরবর্তী")) &&
             containsAny(root, listOf("পাওয়ারলোড", "ফ্লেক্সিরিটেইল"))
         if (onDashboard) {
+            // v15: success-এর OK চেপে হোমে ফিরে এলে তবেই পরের রিকোয়েস্ট লোড করো।
+            if (DriverSession.successCounted && DriverSession.hasNext()) {
+                DriverSession.moveToNext()
+            }
             // v12: fillRechargeFields() নিজেই প্রতিটি ফিল্ডের ভেতরে যাচাই করে —
             // পুরো স্ক্রিনে substring খোঁজা হয় না, তাই নম্বর/POS লেখার ভেতরে
             // amount-এর সংখ্যা মিলে গিয়ে ভুল "বসানো হয়েছে" রিপোর্ট হবে না।
@@ -120,7 +124,7 @@ class CockpitAccessibilityService : AccessibilityService() {
                 DriverSession.stop("ERS PIN সেভ করা নেই — ড্রাইভার অ্যাপে ERS PIN দিন")
                 return
             }
-            val confirmBtn = findConfirmButton(root)
+            val confirmBtn = findButtonByExactText(root, "নিশ্চিত করুন")
             if (confirmBtn != null && confirmBtn.isEnabled) {
                 if (DriverSession.confirmAttempts >= 4) {
                     DriverSession.stop("নিশ্চিত করুন চাপা যায়নি — manually চাপুন")
@@ -152,19 +156,50 @@ class CockpitAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (containsAny(root, listOf("সফল", "সফলভাবে", "Success", "Transaction Details"))) {
-            DriverSession.state = DriverState.SUCCESS
-            DriverSession.lastMessage = "Recharge success screen পাওয়া গেছে"
-            DriverSession.running = false
-            showToast("Recharge Success")
+        // v15: success পেজ — সফল রিচার্জ গুনে, বাল্ক হলে OK চেপে হোমে ফিরে পরেরটা।
+        if (containsAny(root, listOf("সফল", "সফলভাবে", "Success", "Transaction Details", "ট্রানজেকশন বিস্তারিত"))) {
+            if (!DriverSession.successCounted) {
+                DriverSession.successCounted = true
+                DriverSession.okAttempts = 0
+                DriverSession.completedCount++
+                val done = DriverSession.completedCount
+                DriverSession.lastMessage =
+                    "✅ ${DriverSession.phone} — ${DriverSession.amount} TK সফল ($done/${DriverSession.totalCount})"
+                showToast("✅ রিচার্জ সফল: ${DriverSession.phone}")
+            }
+            if (!DriverSession.hasNext()) {
+                DriverSession.state = DriverState.SUCCESS
+                val ok = DriverSession.completedCount
+                val total = DriverSession.totalCount
+                DriverSession.lastMessage = "🎉 সব রিচার্জ সম্পন্ন ($ok/$total সফল)"
+                DriverSession.running = false
+                showToast("🎉 সব রিচার্জ সম্পন্ন ($ok/$total)")
+                return
+            }
+            // বাল্ক: OK চেপে হোমে ফিরবে; হোম (dashboard) দেখলে তবেই পরের রিকোয়েস্ট লোড হবে।
+            // (OK ব্যর্থ হয়ে একই পেজে থাকলে successCounted ডাবল-গোনা আটকায়।)
+            if (DriverSession.okAttempts >= 4) {
+                DriverSession.stop("OK চাপা যায়নি — manually হোমে গিয়ে আবার RUN দিন")
+                return
+            }
+            DriverSession.state = DriverState.DASHBOARD
+            DriverSession.lastMessage =
+                "পরের রিচার্জের জন্য হোমে ফিরছে… (${DriverSession.currentIndex + 2}/${DriverSession.totalCount})"
+            DriverSession.okAttempts++
+            tapOkButton(root)
+            handler.postDelayed({ drive() }, 1500)
             return
         }
 
         if (containsAny(root, listOf("ব্যর্থ", "Failed", "failure", "দুঃখিত"))) {
             DriverSession.state = DriverState.FAILED
-            DriverSession.lastMessage = "Recharge failed screen পাওয়া গেছে"
+            DriverSession.failedCount++
+            val ok = DriverSession.completedCount
+            val total = DriverSession.totalCount
+            DriverSession.lastMessage =
+                "❌ ${DriverSession.phone} ব্যর্থ — থামানো হয়েছে (✅$ok/$total সফল)"
             DriverSession.running = false
-            showToast("Recharge Failed")
+            showToast("❌ রিচার্জ ব্যর্থ: ${DriverSession.phone}")
         }
     }
 
@@ -454,15 +489,15 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v14: "নিশ্চিত করুন" লেখা বাটনটা খুঁজে তার clickable ancestor নেয়।
-     * টাইটেল "রিচার্জ নিশ্চিত করুন"-কে এড়াতে exact text match করা হয়।
+     * v15: exact লেখা মিলিয়ে বাটনটা খুঁজে তার clickable ancestor নেয়।
+     * ("রিচার্জ নিশ্চিত করুন" টাইটেলকে এড়াতে exact match — substring নয়।)
      */
-    private fun findConfirmButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    private fun findButtonByExactText(root: AccessibilityNodeInfo, label: String): AccessibilityNodeInfo? {
         var result: AccessibilityNodeInfo? = null
         fun walk(n: AccessibilityNodeInfo?) {
             if (n == null || result != null) return
             try {
-                if (n.text?.toString()?.trim() == "নিশ্চিত করুন") {
+                if (n.text?.toString()?.trim() == label) {
                     var c: AccessibilityNodeInfo? = n
                     repeat(6) {
                         val cur = c ?: return@repeat
@@ -480,6 +515,13 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
         walk(root)
         return result
+    }
+
+    /** v15: success/transaction পেজের OK বাটন চাপে (বাল্ক: হোমে ফেরার জন্য)। */
+    private fun tapOkButton(root: AccessibilityNodeInfo): Boolean {
+        val btn = findButtonByExactText(root, "OK")
+        if (btn != null && btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        return clickText(root, listOf("OK"))
     }
 
     /**

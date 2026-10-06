@@ -5,6 +5,8 @@ import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -15,6 +17,7 @@ class MainActivity : Activity() {
 
     private lateinit var phoneInput: EditText
     private lateinit var amountInput: EditText
+    private lateinit var bulkInput: EditText
     private lateinit var cockpitIdInput: EditText
     private lateinit var cockpitPasswordInput: EditText
     private lateinit var ersPinInput: EditText
@@ -22,6 +25,15 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var runButton: Button
     private lateinit var stopButton: Button
+
+    // v15: বাল্ক চলাকালীন লাইভ স্ট্যাটাস দেখানোর জন্য
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val uiRefresh = object : Runnable {
+        override fun run() {
+            refreshUi()
+            uiHandler.postDelayed(this, 2000)
+        }
+    }
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,6 +94,21 @@ class MainActivity : Activity() {
         amountInput = field("রিচার্জ পরিমাণ (যেমন 20)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
         root.addView(amountInput, lp())
 
+        val bulkLabel = TextView(this).apply {
+            text = "বাল্ক লিস্ট (প্রতি লাইনে: নম্বর টাকা) — খালি থাকলে উপরের একটাই চলবে"
+            textSize = 14f
+            setPadding(0, 10, 0, 2)
+        }
+        root.addView(bulkLabel, lp())
+
+        bulkInput = EditText(this).apply {
+            hint = "01311241919 20\n01712345678 50"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+            textSize = 15f
+        }
+        root.addView(bulkInput, lp())
+
         runButton = Button(this).apply {
             text = "RUN RECHARGE"
             setOnClickListener { startDriver() }
@@ -116,7 +143,18 @@ class MainActivity : Activity() {
         }
         root.addView(warning, lp())
 
-        setContentView(root)
+        setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshUi()
+        uiHandler.post(uiRefresh)
+    }
+
+    override fun onPause() {
+        uiHandler.removeCallbacks(uiRefresh)
+        super.onPause()
     }
 
     private fun field(hint: String, type: Int) =
@@ -152,16 +190,25 @@ class MainActivity : Activity() {
     }
 
     private fun startDriver() {
-        val phone = phoneInput.text.toString().trim()
-        val amount = amountInput.text.toString().trim()
-
-        if (!phone.matches(Regex("01\\d{9}"))) {
-            toast("সঠিক ১১ সংখ্যার GP নম্বর দিন")
-            return
-        }
-        if (amount.isBlank() || amount.toDoubleOrNull() == null || amount.toDouble() <= 0) {
-            toast("সঠিক রিচার্জ পরিমাণ দিন")
-            return
+        val bulk = parseBulk(bulkInput.text.toString())
+        val requests: List<RechargeRequest> = if (bulk.isNotEmpty()) {
+            val nonEmpty = bulkInput.text.toString().lines().count { it.trim().isNotEmpty() }
+            if (nonEmpty > bulk.size) {
+                toast("${nonEmpty - bulk.size}টি লাইন বোঝা যায়নি — বাকি ${bulk.size}টি চলছে")
+            }
+            bulk
+        } else {
+            val phone = phoneInput.text.toString().trim()
+            val amount = amountInput.text.toString().trim()
+            if (!phone.matches(Regex("01\\d{9}"))) {
+                toast("সঠিক ১১ সংখ্যার GP নম্বর দিন")
+                return
+            }
+            if (amount.isBlank() || amount.toDoubleOrNull() == null || amount.toDouble() <= 0) {
+                toast("সঠিক রিচার্জ পরিমাণ দিন")
+                return
+            }
+            listOf(RechargeRequest(phone, amount))
         }
         if (!isAccessibilityEnabled()) {
             toast("আগে Accessibility Permission দিন")
@@ -170,7 +217,7 @@ class MainActivity : Activity() {
         }
 
         saveCredentials()
-        DriverSession.start(phone, amount)
+        DriverSession.startBulk(requests)
 
         val launch = findCockpitLaunchIntent()
         if (launch == null) {
@@ -183,6 +230,23 @@ class MainActivity : Activity() {
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
         startActivity(launch)
         refreshUi()
+    }
+
+    /** v15: প্রতি লাইনে "নম্বর টাকা" — যেমন "01311241919 20" */
+    private fun parseBulk(text: String): List<RechargeRequest> {
+        val out = ArrayList<RechargeRequest>()
+        for (rawLine in text.lines()) {
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            val parts = line.split(Regex("[\\s,;]+"))
+            if (parts.size >= 2 &&
+                parts[0].matches(Regex("01\\d{9}")) &&
+                (parts[1].toDoubleOrNull() ?: 0.0) > 0.0
+            ) {
+                out.add(RechargeRequest(parts[0], parts[1]))
+            }
+        }
+        return out
     }
 
     private fun findCockpitLaunchIntent(): Intent? {
