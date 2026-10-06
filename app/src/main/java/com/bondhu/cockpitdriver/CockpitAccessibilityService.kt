@@ -86,8 +86,9 @@ class CockpitAccessibilityService : AccessibilityService() {
             }
             // ডায়াগনস্টিকের জন্য স্ক্রিনের node ডাম্প সংরক্ষণ করা হয়।
             DriverSession.lastNodeDump = captureNodeDump(root)
-            // v18: "+" চেপে রো বাড়িয়ে সব নম্বর+পরিমাণ বসাও, তারপর একবার পরবর্তী।
-            if (!fillAllRows(root)) {
+            // v21: single হলে v17-এর প্রমাণিত fill; বাল্ক হলে "+" রো ফিল।
+            val filled = if (DriverSession.totalCount > 1) fillAllRows(root) else fillRechargeFields(root)
+            if (!filled) {
                 DriverSession.fillAttempts++
                 if (DriverSession.fillAttempts > 8) {
                     DriverSession.stop("ফিল্ডে বসানো যাচ্ছে না — manually চেক করুন")
@@ -208,8 +209,74 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v18: বাল্ক — "+" চেপে রো বাড়িয়ে প্রতিটি রো-তে নম্বর+পরিমাণ বসায়,
-     * তারপর digit-exact যাচাই করে। এক ট্রানজাকশনেই সব রিকোয়েস্ট যাবে।
+     * v21: v17-এর প্রমাণিত single fill হুবহু ফিরিয়ে আনা হলো।
+     * (v18-এর নতুন fillAllRows কিছু ডিভাইসে ফিল্ড চিনতে ব্যর্থ হচ্ছিল।)
+     */
+    private fun fillRechargeFields(root: AccessibilityNodeInfo): Boolean {
+        val edits = ArrayList<AccessibilityNodeInfo>()
+        collectEditable(root, edits)
+        if (edits.size < 2) return false
+
+        var phoneField: AccessibilityNodeInfo? = null
+        var amountField: AccessibilityNodeInfo? = null
+        for (e in edits) {
+            val hint = e.hintText?.toString().orEmpty()
+            if (hint.contains("পরিমাণ") || hint.contains("পরিমান") || hint.contains("amount", ignoreCase = true)) {
+                amountField = e
+            } else if (phoneField == null) {
+                phoneField = e
+            }
+        }
+        if (phoneField == null) phoneField = edits[0]
+        if (amountField == null) {
+            amountField = edits.firstOrNull { it != phoneField } ?: edits[1]
+        }
+
+        // v13: digit-exact যাচাই — "2020"-এর মধ্যে "20" পেয়ে ভুয়া-সফল হবে না।
+        var phoneSet = fieldMatches(phoneField, DriverSession.phone)
+        var amountSet = fieldMatches(amountField, DriverSession.amount)
+
+        if (!phoneSet) {
+            // v13: আগে খালি করে তারপর একবারে লেখে — "২০২০" ধরনের অবশিষ্টাংশ থাকবে না।
+            clearField(phoneField)
+            if (setTextRobust(phoneField, DriverSession.phone)) {
+                phoneSet = fieldMatches(phoneField, DriverSession.phone)
+            }
+        }
+
+        // Amount: try the detected field first, then ALL other editable fields
+        if (!amountSet) {
+            val tried = mutableSetOf<AccessibilityNodeInfo>()
+            if (amountField != null) {
+                tried.add(amountField)
+                clearField(amountField)
+                if (setTextRobust(amountField, DriverSession.amount)) {
+                    Thread.sleep(300)
+                    if (fieldMatches(amountField, DriverSession.amount)) amountSet = true
+                }
+            }
+            if (!amountSet) {
+                for (e in edits) {
+                    if (e == phoneField || e in tried) continue
+                    clearField(e)
+                    if (setTextRobust(e, DriverSession.amount)) {
+                        // Verify the text actually stuck
+                        Thread.sleep(300)
+                        if (fieldMatches(e, DriverSession.amount)) {
+                            amountSet = true
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        return phoneSet && amountSet
+    }
+
+    /**
+     * v21: বাল্ক — "+" চেপে রো বাড়িয়ে v17-এর প্রমাণিত পদ্ধতিতে প্রতি রো ভরে।
+     * ফিল্ড সংগ্রহে v17-এর collectEditable ব্যবহার করা হয়।
      */
     private fun fillAllRows(root: AccessibilityNodeInfo): Boolean {
         val requests = DriverSession.queue
@@ -224,12 +291,11 @@ class CockpitAccessibilityService : AccessibilityService() {
             cur = rootInActiveWindow ?: return false
         }
         if (countRows(cur) < requests.size) return false
-        // 2. রো অনুযায়ী (উপর থেকে নিচে) ফিল্ড জোড়া মিলিয়ে বসাও
-        // v20: v17-এর মতো আগে যাচাই — ঠিক বসানো থাকলে আবার মুছে-বসাবে না।
-        // নইলে প্রতি drive()-এ clear+set ইভেন্ট-ঝড় তুলে "পরবর্তী"-তে যেতে দেয় না।
-        var numbers = numberFields(cur)
-        var amounts = amountFields(cur)
-        if (numbers.size < requests.size || amounts.size < requests.size) return false
+        // 2. v17-এর collectEditable দিয়ে ফিল্ড তুলে রো অনুযায়ী (উপর-নিচ) জোড়া মিলাও
+        val paired = pairRowFields(cur) ?: return false
+        val numbers = paired.first
+        val amounts = paired.second
+        // 3. v17-এর check-first প্যাটার্নে প্রতি রো ভরো
         for (i in requests.indices) {
             if (!fieldMatches(numbers[i], requests[i].phone)) {
                 clearField(numbers[i])
@@ -241,55 +307,45 @@ class CockpitAccessibilityService : AccessibilityService() {
             }
             Thread.sleep(250)
         }
-        // 3. যাচাই: প্রতিটি রো-তে ঠিক নম্বর+পরিমাণ বসেছে কিনা
+        // 4. তাজা root দিয়ে যাচাই
         Thread.sleep(400)
         val r2 = rootInActiveWindow ?: return false
-        numbers = numberFields(r2)
-        amounts = amountFields(r2)
-        if (numbers.size < requests.size || amounts.size < requests.size) return false
+        val paired2 = pairRowFields(r2) ?: return false
         for (i in requests.indices) {
-            if (!fieldMatches(numbers[i], requests[i].phone)) return false
-            if (!fieldMatches(amounts[i], requests[i].amount)) return false
+            if (!fieldMatches(paired2.first[i], requests[i].phone)) return false
+            if (!fieldMatches(paired2.second[i], requests[i].amount)) return false
         }
         return true
     }
 
-    /** v18: রো-এর ফিল্ডগুলো একবারে ঘুরে নম্বর/পরিমাণ আলাদা করে (উপর থেকে নিচে সাজানো)। */
-    private fun collectRowFields(root: AccessibilityNodeInfo): Pair<List<AccessibilityNodeInfo>, List<AccessibilityNodeInfo>> {
+    /** v21: v17-এর collectEditable + hint দিয়ে নম্বর/পরিমাণ ফিল্ড জোড়া মিলায় (উপর থেকে নিচে)। */
+    private fun pairRowFields(root: AccessibilityNodeInfo): Pair<List<AccessibilityNodeInfo>, List<AccessibilityNodeInfo>>? {
+        val edits = ArrayList<AccessibilityNodeInfo>()
+        collectEditable(root, edits)
         val numbers = ArrayList<AccessibilityNodeInfo>()
         val amounts = ArrayList<AccessibilityNodeInfo>()
-        fun walk(n: AccessibilityNodeInfo?) {
-            if (n == null) return
-            try {
-                if (n.isEditable) {
-                    val hint = try {
-                        n.hintText?.toString().orEmpty()
-                    } catch (_: Exception) {
-                        ""
-                    }
-                    if (hint.contains("পরিমাণ") || hint.contains("পরিমান") ||
-                        hint.contains("amount", ignoreCase = true)
-                    ) {
-                        amounts.add(n)
-                    } else {
-                        numbers.add(n)
-                    }
-                }
-                for (i in 0 until n.childCount) walk(n.getChild(i))
-            } catch (_: Exception) { }
+        for (e in edits) {
+            val hint = try { e.hintText?.toString().orEmpty() } catch (_: Exception) { "" }
+            if (hint.contains("পরিমাণ") || hint.contains("পরিমান") ||
+                hint.contains("amount", ignoreCase = true)
+            ) {
+                amounts.add(e)
+            } else {
+                numbers.add(e)
+            }
         }
-        walk(root)
-        return numbers.sortedBy { boundsTop(it) } to amounts.sortedBy { boundsTop(it) }
+        numbers.sortBy { boundsTop(it) }
+        amounts.sortBy { boundsTop(it) }
+        val need = DriverSession.queue.size
+        if (numbers.size < need || amounts.size < need) return null
+        return numbers to amounts
     }
 
-    private fun numberFields(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> =
-        collectRowFields(root).first
-
-    private fun amountFields(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> =
-        collectRowFields(root).second
-
-    private fun countRows(root: AccessibilityNodeInfo): Int =
-        collectRowFields(root).first.size
+    /** v21: রো গোনায় v17-এর collectEditable ব্যবহার করো। */
+    private fun countRows(root: AccessibilityNodeInfo): Int {
+        val paired = pairRowFields(root) ?: return 0
+        return paired.first.size
+    }
 
     private fun boundsTop(n: AccessibilityNodeInfo): Int {
         val r = Rect()
