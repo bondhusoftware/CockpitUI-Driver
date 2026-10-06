@@ -181,14 +181,26 @@ class MainActivity : Activity() {
 
     private fun findCockpitLaunchIntent(): Intent? {
         val pm = packageManager
+        // 1. Try known GP Cockpit packages first (most reliable)
+        val knownPackages = listOf(
+            "retail.grameenphone.com.gpretail",
+            "com.grameenphone.cockpit"
+        )
+        for (pkg in knownPackages) {
+            try {
+                val launch = pm.getLaunchIntentForPackage(pkg)
+                if (launch != null) return launch
+            } catch (_: Exception) { }
+        }
+        // 2. Fall back to label search
         val intent = Intent(Intent.ACTION_MAIN).apply {
             addCategory(Intent.CATEGORY_LAUNCHER)
         }
         val activities = pm.queryIntentActivities(intent, 0)
         val cockpit = activities.firstOrNull { info ->
             val label = info.loadLabel(pm)?.toString()?.trim().orEmpty()
-            label.equals("Cockpit", ignoreCase = true) ||
-                    label.contains("Cockpit", ignoreCase = true)
+            label.contains("Cockpit", ignoreCase = true) ||
+                    label.contains("ককপিট", ignoreCase = true)
         }
         return cockpit?.let {
             Intent(Intent.ACTION_MAIN).apply {
