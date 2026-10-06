@@ -225,14 +225,20 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
         if (countRows(cur) < requests.size) return false
         // 2. রো অনুযায়ী (উপর থেকে নিচে) ফিল্ড জোড়া মিলিয়ে বসাও
+        // v20: v17-এর মতো আগে যাচাই — ঠিক বসানো থাকলে আবার মুছে-বসাবে না।
+        // নইলে প্রতি drive()-এ clear+set ইভেন্ট-ঝড় তুলে "পরবর্তী"-তে যেতে দেয় না।
         var numbers = numberFields(cur)
         var amounts = amountFields(cur)
         if (numbers.size < requests.size || amounts.size < requests.size) return false
         for (i in requests.indices) {
-            clearField(numbers[i])
-            setTextRobust(numbers[i], requests[i].phone)
-            clearField(amounts[i])
-            setTextRobust(amounts[i], requests[i].amount)
+            if (!fieldMatches(numbers[i], requests[i].phone)) {
+                clearField(numbers[i])
+                setTextRobust(numbers[i], requests[i].phone)
+            }
+            if (!fieldMatches(amounts[i], requests[i].amount)) {
+                clearField(amounts[i])
+                setTextRobust(amounts[i], requests[i].amount)
+            }
             Thread.sleep(250)
         }
         // 3. যাচাই: প্রতিটি রো-তে ঠিক নম্বর+পরিমাণ বসেছে কিনা
