@@ -1,6 +1,7 @@
 package com.bondhu.cockpitdriver
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Color
@@ -25,6 +26,8 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var runButton: Button
     private lateinit var stopButton: Button
+    // v19: নিচে লগ — নম্বরের পাশে স্ট্যাটাস, ক্লিকে বিস্তারিত
+    private lateinit var logList: LinearLayout
 
     // v15: বাল্ক চলাকালীন লাইভ স্ট্যাটাস দেখানোর জন্য
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -135,6 +138,19 @@ class MainActivity : Activity() {
             setPadding(0, 18, 0, 0)
         }
         root.addView(status, lp())
+
+        // v19: নিচে লগ — প্রতিটা নম্বর, পাশে স্ট্যাটাস, ক্লিকে বিস্তারিত
+        val logLabel = TextView(this).apply {
+            text = "📝 লগ"
+            textSize = 18f
+            setPadding(0, 20, 0, 4)
+        }
+        root.addView(logLabel, lp())
+
+        logList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        root.addView(logList, lp())
 
         val warning = TextView(this).apply {
             text = "Security: PIN/Password encrypted storage-এ রাখা হবে। App uninstall/clear data করলে saved credentials মুছে যাবে।"
@@ -295,6 +311,68 @@ class MainActivity : Activity() {
         status.text = "Status: ${DriverSession.state}\n${DriverSession.lastMessage}"
         runButton.isEnabled = !DriverSession.running
         stopButton.isEnabled = DriverSession.running
+        renderLog()
+    }
+
+    /** v19: নিচে লগ — নম্বরের পাশে স্ট্যাটাস (আপডেট হয়েছে কিনা দেখা যায়)। */
+    private fun renderLog() {
+        logList.removeAllViews()
+        val reqs = DriverSession.queue
+        if (reqs.isEmpty()) {
+            logList.addView(TextView(this).apply {
+                text = "এখনো কোনো রিকোয়েস্ট নেই"
+                textSize = 14f
+                setTextColor(Color.GRAY)
+            })
+            return
+        }
+        for (i in reqs.indices) {
+            val req = reqs[i]
+            val st = DriverSession.statuses.getOrNull(i).orEmpty().ifBlank { "—" }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(4, 12, 4, 12)
+                isClickable = true
+                isFocusable = true
+            }
+            val numTv = TextView(this).apply {
+                text = "${req.phone}  •  ${req.amount} TK"
+                textSize = 16f
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val stTv = TextView(this).apply {
+                text = st
+                textSize = 16f
+                gravity = Gravity.END
+            }
+            row.addView(numTv)
+            row.addView(stTv)
+            row.setOnClickListener { showLogDetail(i) }
+            logList.addView(row)
+            logList.addView(View(this).apply {
+                setBackgroundColor(Color.rgb(230, 230, 230))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 2
+                )
+            })
+        }
+    }
+
+    /** v19: লগের রো-তে ক্লিক করলে বিস্তারিত দেখায়। */
+    private fun showLogDetail(i: Int) {
+        val req = DriverSession.queue.getOrNull(i) ?: return
+        val st = DriverSession.statuses.getOrNull(i).orEmpty().ifBlank { "—" }
+        val det = DriverSession.statusDetails.getOrNull(i).orEmpty()
+        val msg = StringBuilder()
+            .append("নম্বর: ${req.phone}\n")
+            .append("পরিমাণ: ${req.amount} TK\n")
+            .append("স্ট্যাটাস: $st\n")
+        if (det.isNotBlank()) msg.append("বিস্তারিত: $det")
+        AlertDialog.Builder(this)
+            .setTitle("📝 লগ")
+            .setMessage(msg.toString())
+            .setPositiveButton("ঠিক আছে", null)
+            .show()
     }
 
     private fun toast(s: String) =

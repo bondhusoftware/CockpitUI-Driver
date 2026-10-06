@@ -101,6 +101,8 @@ class CockpitAccessibilityService : AccessibilityService() {
                 return
             }
             DriverSession.fillAttempts = 0
+            // v19: লগে সব নম্বরের স্ট্যাটাস "চলছে"
+            DriverSession.setAllStatus("🔄 চলছে")
 
             if (DriverSession.nextAttempts >= 3) {
                 DriverSession.stop("পরবর্তী চাপা যায়নি — manually চাপুন")
@@ -177,6 +179,8 @@ class CockpitAccessibilityService : AccessibilityService() {
                 val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন (${total}টি)" else "🎉 রিচার্জ সম্পন্ন"
                 DriverSession.lastMessage = "$msg — OK চেপে হোমে ফিরছে"
                 showToast(msg)
+                // v19: লগে সব নম্বর সফল
+                DriverSession.setAllStatus("✅ সফল", "সফল — ${DriverSession.nowTime()}")
             }
             if (DriverSession.okAttempts >= 4) {
                 DriverSession.stop("🎉 রিচার্জ সম্পন্ন — OK manually চেপে হোমে যান")
@@ -196,6 +200,8 @@ class CockpitAccessibilityService : AccessibilityService() {
             val total = DriverSession.totalCount
             DriverSession.lastMessage =
                 "❌ ${DriverSession.phone} ব্যর্থ — থামানো হয়েছে (✅$ok/$total সফল)"
+            // v19: লগে সব নম্বর ব্যর্থ
+            DriverSession.setAllStatus("❌ ব্যর্থ", DriverSession.lastMessage)
             DriverSession.running = false
             showToast("❌ রিচার্জ ব্যর্থ: ${DriverSession.phone}")
         }
