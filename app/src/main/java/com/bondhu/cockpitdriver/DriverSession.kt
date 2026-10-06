@@ -7,6 +7,7 @@ object DriverSession {
     @Volatile var state: DriverState = DriverState.IDLE
     @Volatile var nextAttempts: Int = 0
     @Volatile var confirmAttempts: Int = 0
+    @Volatile var pinAttempts: Int = 0
     @Volatile var lastMessage: String = "প্রস্তুত"
     @Volatile var lastNodeDump: String = ""
 
@@ -16,6 +17,7 @@ object DriverSession {
         running = true
         nextAttempts = 0
         confirmAttempts = 0
+        pinAttempts = 0
         state = DriverState.OPENING
         lastMessage = "Cockpit খোলা হচ্ছে…"
     }

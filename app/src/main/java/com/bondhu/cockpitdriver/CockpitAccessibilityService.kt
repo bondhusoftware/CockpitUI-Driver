@@ -103,8 +103,10 @@ class CockpitAccessibilityService : AccessibilityService() {
             return
         }
 
-        // v13: Confirm page — ERS PIN বসিয়ে "নিশ্চিত করুন" চাপবে।
-        // (আগে "রিচার্জ নিশ্চিত করুন" ব্রাঞ্চটা এখানেই থেমে যেত — PIN কখনো বসতো না।)
+        // v14: Confirm page — ERS PIN বসিয়ে "নিশ্চিত করুন" চাপবে।
+        // v13-এর বাগ: password ফিল্ডের text পড়ে যাচাই করা যায় না (•••• থাকে),
+        // তাই বারবার মুছে-বসানোর লুপে আটকে যেত। এখন PIN গৃহীত হয়েছে কিনা
+        // "নিশ্চিত করুন" বাটনের enabled state দেখে বোঝে — এটাই অ্যাপের নিজের সংকেত।
         val onConfirmPage = containsAny(root, listOf("রিচার্জ নিশ্চিত করুন")) &&
             containsAny(root, listOf("ERS PIN", "নিশ্চিত করুন"))
         if (onConfirmPage) {
@@ -118,26 +120,35 @@ class CockpitAccessibilityService : AccessibilityService() {
                 DriverSession.stop("ERS PIN সেভ করা নেই — ড্রাইভার অ্যাপে ERS PIN দিন")
                 return
             }
-            if (!fillErsPinClean(root, pin)) {
-                DriverSession.state = DriverState.WAITING_PIN
-                DriverSession.lastMessage = "ERS PIN বসানো যাচ্ছে না — আবার চেষ্টা চলছে"
-                handler.postDelayed({ drive() }, 800)
+            val confirmBtn = findConfirmButton(root)
+            if (confirmBtn != null && confirmBtn.isEnabled) {
+                if (DriverSession.confirmAttempts >= 4) {
+                    DriverSession.stop("নিশ্চিত করুন চাপা যায়নি — manually চাপুন")
+                    return
+                }
+                DriverSession.state = DriverState.SUBMITTING
+                DriverSession.lastMessage = "নিশ্চিত করুন চাপা হচ্ছে"
+                DriverSession.confirmAttempts++
+                if (!confirmBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    clickText(root, listOf("নিশ্চিত করুন"))
+                }
+                handler.postDelayed({ drive() }, 1500)
                 return
             }
-            if (DriverSession.confirmAttempts >= 4) {
-                DriverSession.stop("নিশ্চিত করুন চাপা যায়নি — manually চাপুন")
+            // বাটন এখনো enable হয়নি — PIN পৌঁছেছে কিনা নিশ্চিত করো (সর্বোচ্চ ৩ বার বসাবে)।
+            DriverSession.state = DriverState.WAITING_PIN
+            DriverSession.pinAttempts++
+            if (DriverSession.pinAttempts <= 3) {
+                DriverSession.lastMessage = "ERS PIN বসানো হচ্ছে"
+                fillPinOnce(root, pin)
+            } else {
+                DriverSession.lastMessage = "নিশ্চিত করুন বাটন enable-এর অপেক্ষায়…"
+            }
+            if (DriverSession.pinAttempts > 20) {
+                DriverSession.stop("PIN গৃহীত হচ্ছে না (ভুল PIN হতে পারে) — manually চেক করুন")
                 return
             }
-            DriverSession.state = DriverState.SUBMITTING
-            DriverSession.lastMessage = "PIN বসানো হয়েছে — নিশ্চিত করুন চাপা হচ্ছে"
-            DriverSession.confirmAttempts++
-            // PIN বসানোর পর বাটন enable হতে একটু সময় লাগে।
-            Thread.sleep(800)
-            val fresh = rootInActiveWindow
-            if (fresh != null) {
-                clickText(fresh, listOf("নিশ্চিত করুন"))
-            }
-            handler.postDelayed({ drive() }, 1500)
+            handler.postDelayed({ drive() }, 1000)
             return
         }
 
@@ -407,9 +418,11 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v13: ERS PIN ফিল্ড পরিষ্কার করে একবারে PIN বসায়, digit-exact যাচাইসহ।
+     * v14: PIN ফিল্ডে একবার PIN বসায় (clear + set)। password ফিল্ডের text পড়ে
+     * যাচাই করা যায় না (•••• থাকে) — সফল কিনা "নিশ্চিত করুন" বাটনের
+     * enabled state দেখে drive() লুপই ঠিক করবে।
      */
-    private fun fillErsPinClean(root: AccessibilityNodeInfo, pin: String): Boolean {
+    private fun fillPinOnce(root: AccessibilityNodeInfo, pin: String): Boolean {
         val edits = ArrayList<AccessibilityNodeInfo>()
         collectEditable(root, edits)
 
@@ -425,14 +438,48 @@ class CockpitAccessibilityService : AccessibilityService() {
         if (pinField == null && edits.size == 1) pinField = edits[0]
         if (pinField == null) return false
 
-        if (fieldMatches(pinField, pin)) return true
         clearField(pinField)
         Thread.sleep(200)
-        if (setTextRobust(pinField, pin)) {
+        return try {
+            pinField.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             Thread.sleep(300)
-            return fieldMatches(pinField, pin)
+            if (setText(pinField, pin)) return true
+            // Fallback: clipboard paste
+            val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("pin", pin))
+            pinField.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+        } catch (_: Exception) {
+            false
         }
-        return false
+    }
+
+    /**
+     * v14: "নিশ্চিত করুন" লেখা বাটনটা খুঁজে তার clickable ancestor নেয়।
+     * টাইটেল "রিচার্জ নিশ্চিত করুন"-কে এড়াতে exact text match করা হয়।
+     */
+    private fun findConfirmButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var result: AccessibilityNodeInfo? = null
+        fun walk(n: AccessibilityNodeInfo?) {
+            if (n == null || result != null) return
+            try {
+                if (n.text?.toString()?.trim() == "নিশ্চিত করুন") {
+                    var c: AccessibilityNodeInfo? = n
+                    repeat(6) {
+                        val cur = c ?: return@repeat
+                        if (cur.isClickable) {
+                            result = cur
+                            return
+                        }
+                        c = cur.parent
+                    }
+                }
+                for (i in 0 until n.childCount) {
+                    walk(n.getChild(i))
+                }
+            } catch (_: Exception) { }
+        }
+        walk(root)
+        return result
     }
 
     /**
