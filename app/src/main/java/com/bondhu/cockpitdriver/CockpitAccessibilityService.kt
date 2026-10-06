@@ -79,7 +79,7 @@ class CockpitAccessibilityService : AccessibilityService() {
             // v18: বাল্ক শেষে OK চেপে হোমে ফিরে এলে এখানেই সম্পন্ন।
             if (DriverSession.successCounted) {
                 val total = DriverSession.totalCount
-                val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন ($totalটি)" else "🎉 রিচার্জ সম্পন্ন"
+                val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন (${total}টি)" else "🎉 রিচার্জ সম্পন্ন"
                 DriverSession.stop(msg)
                 showToast(msg)
                 return
@@ -96,7 +96,7 @@ class CockpitAccessibilityService : AccessibilityService() {
                 DriverSession.state = DriverState.ENTERING_AMOUNT
                 val total = DriverSession.totalCount
                 DriverSession.lastMessage =
-                    if (total > 1) "বাল্ক: $totalটি নম্বর বসানো হচ্ছে" else "নম্বর ও পরিমাণ বসানো হচ্ছে"
+                    if (total > 1) "বাল্ক: ${total}টি নম্বর বসানো হচ্ছে" else "নম্বর ও পরিমাণ বসানো হচ্ছে"
                 handler.postDelayed({ drive() }, 900)
                 return
             }
@@ -174,7 +174,7 @@ class CockpitAccessibilityService : AccessibilityService() {
                 DriverSession.okAttempts = 0
                 DriverSession.completedCount = DriverSession.totalCount
                 val total = DriverSession.totalCount
-                val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন ($totalটি)" else "🎉 রিচার্জ সম্পন্ন"
+                val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন (${total}টি)" else "🎉 রিচার্জ সম্পন্ন"
                 DriverSession.lastMessage = "$msg — OK চেপে হোমে ফিরছে"
                 showToast(msg)
             }
