@@ -72,34 +72,42 @@ class CockpitAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Dashboard: fill number + amount, then SKIP Powerload and tap Next (পরবর্তী).
-        // Previous bug: once both fields were filled, fillRechargeFields() returned true
-        // and we re-posted drive() forever, so the Next branch was never reached.
+        // Dashboard: v18 — fillAllRows() সব রো বসিয়ে true দিলে একবার পরবর্তী চাপবে।
         val onDashboard = containsAny(root, listOf("পরবর্তী")) &&
             containsAny(root, listOf("পাওয়ারলোড", "ফ্লেক্সিরিটেইল"))
         if (onDashboard) {
-            // v15: success-এর OK চেপে হোমে ফিরে এলে তবেই পরের রিকোয়েস্ট লোড করো।
-            if (DriverSession.successCounted && DriverSession.hasNext()) {
-                DriverSession.moveToNext()
-            }
-            // v12: fillRechargeFields() নিজেই প্রতিটি ফিল্ডের ভেতরে যাচাই করে —
-            // পুরো স্ক্রিনে substring খোঁজা হয় না, তাই নম্বর/POS লেখার ভেতরে
-            // amount-এর সংখ্যা মিলে গিয়ে ভুল "বসানো হয়েছে" রিপোর্ট হবে না।
-            // ডায়াগনস্টিকের জন্য স্ক্রিনের node ডাম্পও সংরক্ষণ করা হয়।
-            DriverSession.lastNodeDump = captureNodeDump(root)
-            if (!fillRechargeFields(root)) {
-                DriverSession.state = DriverState.ENTERING_AMOUNT
-                DriverSession.lastMessage = "নম্বর ও পরিমাণ বসানো হচ্ছে"
-                handler.postDelayed({ drive() }, 450)
+            // v18: বাল্ক শেষে OK চেপে হোমে ফিরে এলে এখানেই সম্পন্ন।
+            if (DriverSession.successCounted) {
+                val total = DriverSession.totalCount
+                val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন ($totalটি)" else "🎉 রিচার্জ সম্পন্ন"
+                DriverSession.stop(msg)
+                showToast(msg)
                 return
             }
+            // ডায়াগনস্টিকের জন্য স্ক্রিনের node ডাম্প সংরক্ষণ করা হয়।
+            DriverSession.lastNodeDump = captureNodeDump(root)
+            // v18: "+" চেপে রো বাড়িয়ে সব নম্বর+পরিমাণ বসাও, তারপর একবার পরবর্তী।
+            if (!fillAllRows(root)) {
+                DriverSession.fillAttempts++
+                if (DriverSession.fillAttempts > 8) {
+                    DriverSession.stop("ফিল্ডে বসানো যাচ্ছে না — manually চেক করুন")
+                    return
+                }
+                DriverSession.state = DriverState.ENTERING_AMOUNT
+                val total = DriverSession.totalCount
+                DriverSession.lastMessage =
+                    if (total > 1) "বাল্ক: $totalটি নম্বর বসানো হচ্ছে" else "নম্বর ও পরিমাণ বসানো হচ্ছে"
+                handler.postDelayed({ drive() }, 900)
+                return
+            }
+            DriverSession.fillAttempts = 0
 
             if (DriverSession.nextAttempts >= 3) {
                 DriverSession.stop("পরবর্তী চাপা যায়নি — manually চাপুন")
                 return
             }
             DriverSession.state = DriverState.TAP_NEXT
-            DriverSession.lastMessage = "পাওয়ারলোড skip করে পরবর্তী চাপা হচ্ছে"
+            DriverSession.lastMessage = "পরবর্তী চাপা হচ্ছে"
             if (clickText(root, listOf("পরবর্তী"))) {
                 DriverSession.nextAttempts++
             }
@@ -114,9 +122,12 @@ class CockpitAccessibilityService : AccessibilityService() {
         val onConfirmPage = containsAny(root, listOf("রিচার্জ নিশ্চিত করুন")) &&
             containsAny(root, listOf("ERS PIN", "নিশ্চিত করুন"))
         if (onConfirmPage) {
-            // Safety: confirm পেজের টাকার অঙ্ক আমাদের amount-এর সাথে না মিললে সাবমিট হবে না।
-            if (!confirmAmountMatches(root, DriverSession.amount)) {
-                DriverSession.stop("পরিমাণ মিলছে না — manually চেক করুন")
+            // v18: সব রিকোয়েস্টের নম্বর+পরিমাণ কনফার্ম পেজে মিলতে হবে, তবেই সাবমিট।
+            val reqs = DriverSession.queue
+            val numbersOk = reqs.all { containsText(root, it.phone) }
+            val amountsOk = reqs.all { confirmAmountMatches(root, it.amount) }
+            if (!numbersOk || !amountsOk) {
+                DriverSession.stop("নম্বর/পরিমাণ মিলছে না — manually চেক করুন")
                 return
             }
             val pin = SecureStore.get(this, "ers_pin")
@@ -156,35 +167,22 @@ class CockpitAccessibilityService : AccessibilityService() {
             return
         }
 
-        // v15: success পেজ — সফল রিচার্জ গুনে, বাল্ক হলে OK চেপে হোমে ফিরে পরেরটা।
+        // v18: সফল — এক ট্রানজাকশনেই সব শেষ। OK চেপে হোমে ফেরো।
         if (containsAny(root, listOf("সফল", "সফলভাবে", "Success", "Transaction Details", "ট্রানজেকশন বিস্তারিত"))) {
             if (!DriverSession.successCounted) {
                 DriverSession.successCounted = true
                 DriverSession.okAttempts = 0
-                DriverSession.completedCount++
-                val done = DriverSession.completedCount
-                DriverSession.lastMessage =
-                    "✅ ${DriverSession.phone} — ${DriverSession.amount} TK সফল ($done/${DriverSession.totalCount})"
-                showToast("✅ রিচার্জ সফল: ${DriverSession.phone}")
-            }
-            if (!DriverSession.hasNext()) {
-                DriverSession.state = DriverState.SUCCESS
-                val ok = DriverSession.completedCount
+                DriverSession.completedCount = DriverSession.totalCount
                 val total = DriverSession.totalCount
-                DriverSession.lastMessage = "🎉 সব রিচার্জ সম্পন্ন ($ok/$total সফল)"
-                DriverSession.running = false
-                showToast("🎉 সব রিচার্জ সম্পন্ন ($ok/$total)")
-                return
+                val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন ($totalটি)" else "🎉 রিচার্জ সম্পন্ন"
+                DriverSession.lastMessage = "$msg — OK চেপে হোমে ফিরছে"
+                showToast(msg)
             }
-            // বাল্ক: OK চেপে হোমে ফিরবে; হোম (dashboard) দেখলে তবেই পরের রিকোয়েস্ট লোড হবে।
-            // (OK ব্যর্থ হয়ে একই পেজে থাকলে successCounted ডাবল-গোনা আটকায়।)
             if (DriverSession.okAttempts >= 4) {
-                DriverSession.stop("OK চাপা যায়নি — manually হোমে গিয়ে আবার RUN দিন")
+                DriverSession.stop("🎉 রিচার্জ সম্পন্ন — OK manually চেপে হোমে যান")
                 return
             }
             DriverSession.state = DriverState.DASHBOARD
-            DriverSession.lastMessage =
-                "পরের রিচার্জের জন্য হোমে ফিরছে… (${DriverSession.currentIndex + 2}/${DriverSession.totalCount})"
             DriverSession.okAttempts++
             tapOkButton(root)
             handler.postDelayed({ drive() }, 1500)
@@ -203,66 +201,99 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun fillRechargeFields(root: AccessibilityNodeInfo): Boolean {
-        val edits = ArrayList<AccessibilityNodeInfo>()
-        collectEditable(root, edits)
-        if (edits.size < 2) return false
-
-        var phoneField: AccessibilityNodeInfo? = null
-        var amountField: AccessibilityNodeInfo? = null
-        for (e in edits) {
-            val hint = e.hintText?.toString().orEmpty()
-            if (hint.contains("পরিমাণ") || hint.contains("পরিমান") || hint.contains("amount", ignoreCase = true)) {
-                amountField = e
-            } else if (phoneField == null) {
-                phoneField = e
-            }
+    /**
+     * v18: বাল্ক — "+" চেপে রো বাড়িয়ে প্রতিটি রো-তে নম্বর+পরিমাণ বসায়,
+     * তারপর digit-exact যাচাই করে। এক ট্রানজাকশনেই সব রিকোয়েস্ট যাবে।
+     */
+    private fun fillAllRows(root: AccessibilityNodeInfo): Boolean {
+        val requests = DriverSession.queue
+        if (requests.isEmpty()) return false
+        var cur = root
+        // 1. যতগুলো রিকোয়েস্ট ততগুলো রো বানাও
+        var guard = 0
+        while (countRows(cur) < requests.size && guard < 12) {
+            guard++
+            if (!tapPlusButton(cur)) return false
+            Thread.sleep(900)
+            cur = rootInActiveWindow ?: return false
         }
-        if (phoneField == null) phoneField = edits[0]
-        if (amountField == null) {
-            amountField = edits.firstOrNull { it != phoneField } ?: edits[1]
+        if (countRows(cur) < requests.size) return false
+        // 2. রো অনুযায়ী (উপর থেকে নিচে) ফিল্ড জোড়া মিলিয়ে বসাও
+        var numbers = numberFields(cur)
+        var amounts = amountFields(cur)
+        if (numbers.size < requests.size || amounts.size < requests.size) return false
+        for (i in requests.indices) {
+            clearField(numbers[i])
+            setTextRobust(numbers[i], requests[i].phone)
+            clearField(amounts[i])
+            setTextRobust(amounts[i], requests[i].amount)
+            Thread.sleep(250)
         }
-
-        // v13: digit-exact যাচাই — "2020"-এর মধ্যে "20" পেয়ে ভুয়া-সফল হবে না।
-        var phoneSet = fieldMatches(phoneField, DriverSession.phone)
-        var amountSet = fieldMatches(amountField, DriverSession.amount)
-
-        if (!phoneSet) {
-            // v13: আগে খালি করে তারপর একবারে লেখে — "২০২০" ধরনের অবশিষ্টাংশ থাকবে না।
-            clearField(phoneField)
-            if (setTextRobust(phoneField, DriverSession.phone)) {
-                phoneSet = fieldMatches(phoneField, DriverSession.phone)
-            }
+        // 3. যাচাই: প্রতিটি রো-তে ঠিক নম্বর+পরিমাণ বসেছে কিনা
+        Thread.sleep(400)
+        val r2 = rootInActiveWindow ?: return false
+        numbers = numberFields(r2)
+        amounts = amountFields(r2)
+        if (numbers.size < requests.size || amounts.size < requests.size) return false
+        for (i in requests.indices) {
+            if (!fieldMatches(numbers[i], requests[i].phone)) return false
+            if (!fieldMatches(amounts[i], requests[i].amount)) return false
         }
+        return true
+    }
 
-        // Amount: try the detected field first, then ALL other editable fields
-        if (!amountSet) {
-            val tried = mutableSetOf<AccessibilityNodeInfo>()
-            if (amountField != null) {
-                tried.add(amountField)
-                clearField(amountField)
-                if (setTextRobust(amountField, DriverSession.amount)) {
-                    Thread.sleep(300)
-                    if (fieldMatches(amountField, DriverSession.amount)) amountSet = true
-                }
-            }
-            if (!amountSet) {
-                for (e in edits) {
-                    if (e == phoneField || e in tried) continue
-                    clearField(e)
-                    if (setTextRobust(e, DriverSession.amount)) {
-                        // Verify the text actually stuck
-                        Thread.sleep(300)
-                        if (fieldMatches(e, DriverSession.amount)) {
-                            amountSet = true
-                            break
-                        }
+    /** v18: রো-এর ফিল্ডগুলো একবারে ঘুরে নম্বর/পরিমাণ আলাদা করে (উপর থেকে নিচে সাজানো)। */
+    private fun collectRowFields(root: AccessibilityNodeInfo): Pair<List<AccessibilityNodeInfo>, List<AccessibilityNodeInfo>> {
+        val numbers = ArrayList<AccessibilityNodeInfo>()
+        val amounts = ArrayList<AccessibilityNodeInfo>()
+        fun walk(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            try {
+                if (n.isEditable) {
+                    val hint = try {
+                        n.hintText?.toString().orEmpty()
+                    } catch (_: Exception) {
+                        ""
+                    }
+                    if (hint.contains("পরিমাণ") || hint.contains("পরিমান") ||
+                        hint.contains("amount", ignoreCase = true)
+                    ) {
+                        amounts.add(n)
+                    } else {
+                        numbers.add(n)
                     }
                 }
-            }
+                for (i in 0 until n.childCount) walk(n.getChild(i))
+            } catch (_: Exception) { }
         }
+        walk(root)
+        return numbers.sortedBy { boundsTop(it) } to amounts.sortedBy { boundsTop(it) }
+    }
 
-        return phoneSet && amountSet
+    private fun numberFields(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> =
+        collectRowFields(root).first
+
+    private fun amountFields(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> =
+        collectRowFields(root).second
+
+    private fun countRows(root: AccessibilityNodeInfo): Int =
+        collectRowFields(root).first.size
+
+    private fun boundsTop(n: AccessibilityNodeInfo): Int {
+        val r = Rect()
+        return try {
+            n.getBoundsInScreen(r)
+            r.top
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    /** v18: "+" বাটন চেপে নতুন রো নেয়। */
+    private fun tapPlusButton(root: AccessibilityNodeInfo): Boolean {
+        val btn = findButtonByExactText(root, "+")
+        if (btn != null && btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        return clickText(root, listOf("+"))
     }
 
     /** v13: শুধু সংখ্যা রাখে; বাংলা সংখ্যাকেও ASCII-তে নরমালাইজ করে। */
