@@ -103,29 +103,41 @@ class CockpitAccessibilityService : AccessibilityService() {
             return
         }
 
-        if (containsAny(root, listOf("রিচার্জ নিশ্চিত করুন")) && containsText(root, DriverSession.phone)) {
-            DriverSession.state = DriverState.CONFIRMATION
-            DriverSession.lastMessage = "Confirmation screen পাওয়া গেছে"
-            return
-        }
-
-        if (containsAny(root, listOf("ERS PIN দিন"))) {
-            if (fillErsPin(root)) {
-                DriverSession.state = DriverState.SUBMITTING
-                DriverSession.lastMessage = "Saved ERS PIN দেওয়া হয়েছে"
-                handler.postDelayed({ drive() }, 450)
-            } else {
-                DriverSession.state = DriverState.WAITING_PIN
-                DriverSession.lastMessage = "ERS PIN field পাওয়া গেছে, কিন্তু fill করা যায়নি"
+        // v13: Confirm page — ERS PIN বসিয়ে "নিশ্চিত করুন" চাপবে।
+        // (আগে "রিচার্জ নিশ্চিত করুন" ব্রাঞ্চটা এখানেই থেমে যেত — PIN কখনো বসতো না।)
+        val onConfirmPage = containsAny(root, listOf("রিচার্জ নিশ্চিত করুন")) &&
+            containsAny(root, listOf("ERS PIN", "নিশ্চিত করুন"))
+        if (onConfirmPage) {
+            // Safety: confirm পেজের টাকার অঙ্ক আমাদের amount-এর সাথে না মিললে সাবমিট হবে না।
+            if (!confirmAmountMatches(root, DriverSession.amount)) {
+                DriverSession.stop("পরিমাণ মিলছে না — manually চেক করুন")
+                return
             }
-            return
-        }
-
-        if (containsAny(root, listOf("নিশ্চিত করুন", "নিশ্চিতকরন", "Confirm")) &&
-            (DriverSession.state == DriverState.SUBMITTING || DriverSession.state == DriverState.WAITING_PIN)) {
+            val pin = SecureStore.get(this, "ers_pin")
+            if (pin.isBlank()) {
+                DriverSession.stop("ERS PIN সেভ করা নেই — ড্রাইভার অ্যাপে ERS PIN দিন")
+                return
+            }
+            if (!fillErsPinClean(root, pin)) {
+                DriverSession.state = DriverState.WAITING_PIN
+                DriverSession.lastMessage = "ERS PIN বসানো যাচ্ছে না — আবার চেষ্টা চলছে"
+                handler.postDelayed({ drive() }, 800)
+                return
+            }
+            if (DriverSession.confirmAttempts >= 4) {
+                DriverSession.stop("নিশ্চিত করুন চাপা যায়নি — manually চাপুন")
+                return
+            }
             DriverSession.state = DriverState.SUBMITTING
-            DriverSession.lastMessage = "নিশ্চিত করুন চাপা হচ্ছে"
-            clickText(root, listOf("নিশ্চিত করুন", "নিশ্চিতকরন", "Confirm"))
+            DriverSession.lastMessage = "PIN বসানো হয়েছে — নিশ্চিত করুন চাপা হচ্ছে"
+            DriverSession.confirmAttempts++
+            // PIN বসানোর পর বাটন enable হতে একটু সময় লাগে।
+            Thread.sleep(800)
+            val fresh = rootInActiveWindow
+            if (fresh != null) {
+                clickText(fresh, listOf("নিশ্চিত করুন"))
+            }
+            handler.postDelayed({ drive() }, 1500)
             return
         }
 
@@ -165,12 +177,16 @@ class CockpitAccessibilityService : AccessibilityService() {
             amountField = edits.firstOrNull { it != phoneField } ?: edits[1]
         }
 
-        // v12: প্রতিটি ফিল্ডের নিজের text-এর ভেতরে যাচাই — পুরো স্ক্রিনে নয়।
-        var phoneSet = fieldContains(phoneField, DriverSession.phone)
-        var amountSet = fieldContains(amountField, DriverSession.amount)
+        // v13: digit-exact যাচাই — "2020"-এর মধ্যে "20" পেয়ে ভুয়া-সফল হবে না।
+        var phoneSet = fieldMatches(phoneField, DriverSession.phone)
+        var amountSet = fieldMatches(amountField, DriverSession.amount)
 
-        if (!phoneSet && setTextRobust(phoneField, DriverSession.phone)) {
-            phoneSet = fieldContains(phoneField, DriverSession.phone)
+        if (!phoneSet) {
+            // v13: আগে খালি করে তারপর একবারে লেখে — "২০২০" ধরনের অবশিষ্টাংশ থাকবে না।
+            clearField(phoneField)
+            if (setTextRobust(phoneField, DriverSession.phone)) {
+                phoneSet = fieldMatches(phoneField, DriverSession.phone)
+            }
         }
 
         // Amount: try the detected field first, then ALL other editable fields
@@ -178,18 +194,20 @@ class CockpitAccessibilityService : AccessibilityService() {
             val tried = mutableSetOf<AccessibilityNodeInfo>()
             if (amountField != null) {
                 tried.add(amountField)
+                clearField(amountField)
                 if (setTextRobust(amountField, DriverSession.amount)) {
                     Thread.sleep(300)
-                    if (fieldContains(amountField, DriverSession.amount)) amountSet = true
+                    if (fieldMatches(amountField, DriverSession.amount)) amountSet = true
                 }
             }
             if (!amountSet) {
                 for (e in edits) {
                     if (e == phoneField || e in tried) continue
+                    clearField(e)
                     if (setTextRobust(e, DriverSession.amount)) {
                         // Verify the text actually stuck
                         Thread.sleep(300)
-                        if (fieldContains(e, DriverSession.amount)) {
+                        if (fieldMatches(e, DriverSession.amount)) {
                             amountSet = true
                             break
                         }
@@ -201,18 +219,45 @@ class CockpitAccessibilityService : AccessibilityService() {
         return phoneSet && amountSet
     }
 
+    /** v13: শুধু সংখ্যা রাখে; বাংলা সংখ্যাকেও ASCII-তে নরমালাইজ করে। */
+    private fun digitsOnly(s: String): String {
+        val sb = StringBuilder()
+        for (c in s) {
+            if (c in '0'..'9') sb.append(c)
+            else if (c in '০'..'৯') sb.append('0' + (c - '০'))
+        }
+        return sb.toString()
+    }
+
     /**
-     * v12: শুধু ওই ফিল্ডের নিজের text-এ খোঁজে — স্ক্রিনের অন্য লেখায়
-     * (নম্বর / POS id) সংখ্যা মিলে গিয়ে ভুয়া "বসানো হয়েছে" হবে না।
+     * v13: ফিল্ডের ভেতরের সংখ্যা value-এর সংখ্যার সাথে হুবহু মিলছে কিনা।
+     * "2020"-এর মধ্যে "20" খুঁজে পেয়ে ভুয়া-সফল হবে না; "৳ 20" বা "20.0"-ও মিলবে।
      */
-    private fun fieldContains(field: AccessibilityNodeInfo?, value: String): Boolean {
-        if (field == null || value.isEmpty()) return false
+    private fun fieldMatches(field: AccessibilityNodeInfo?, value: String): Boolean {
+        if (field == null) return false
+        val want = digitsOnly(value)
+        if (want.isEmpty()) return false
         return try {
             field.refresh()
-            field.text?.toString()?.contains(value) == true
+            val have = field.text?.toString().orEmpty()
+            if (digitsOnly(have) == want) return true
+            // "20" vs "20.0" — সংখ্যা হিসেবে তুলনা
+            val wantNum = value.trim().toDoubleOrNull()
+            val haveNum = have.trim().toDoubleOrNull()
+            wantNum != null && haveNum != null && wantNum == haveNum
         } catch (_: Exception) {
             false
         }
+    }
+
+    /** v13: ফিল্ড আগে খালি করে — যাতে পুরনো "2020"-ধরনের অবশিষ্টাংশ না থাকে। */
+    private fun clearField(node: AccessibilityNodeInfo) {
+        try {
+            val args = Bundle()
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            Thread.sleep(200)
+        } catch (_: Exception) { }
     }
 
     /**
@@ -269,14 +314,14 @@ class CockpitAccessibilityService : AccessibilityService() {
     private fun setTextRobust(node: AccessibilityNodeInfo, value: String): Boolean {
         if (setText(node, value)) {
             Thread.sleep(200)
-            if (node.text?.toString() == value) return true
+            if (fieldMatches(node, value)) return true
         }
         try {
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             Thread.sleep(400)
             if (setText(node, value)) {
                 Thread.sleep(200)
-                if (node.text?.toString() == value) return true
+                if (fieldMatches(node, value)) return true
             }
         } catch (_: Exception) { }
         try {
@@ -295,13 +340,17 @@ class CockpitAccessibilityService : AccessibilityService() {
             } catch (_: Exception) { }
             if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
                 Thread.sleep(300)
-                if (node.text?.toString()?.contains(value) == true) return true
+                if (fieldMatches(node, value)) return true
             }
         } catch (_: Exception) { }
         try {
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             Thread.sleep(400)
-            return setText(node, value)
+            if (setText(node, value)) {
+                Thread.sleep(250)
+                return fieldMatches(node, value)
+            }
+            return false
         } catch (_: Exception) {
             return false
         }
@@ -357,25 +406,60 @@ class CockpitAccessibilityService : AccessibilityService() {
         return filledId && filledPassword
     }
 
-    private fun fillErsPin(root: AccessibilityNodeInfo): Boolean {
-        val pin = SecureStore.get(this, "ers_pin")
-        if (pin.isBlank()) return false
-
+    /**
+     * v13: ERS PIN ফিল্ড পরিষ্কার করে একবারে PIN বসায়, digit-exact যাচাইসহ।
+     */
+    private fun fillErsPinClean(root: AccessibilityNodeInfo, pin: String): Boolean {
         val edits = ArrayList<AccessibilityNodeInfo>()
         collectEditable(root, edits)
 
+        var pinField: AccessibilityNodeInfo? = null
         for (node in edits) {
             val hint = node.hintText?.toString().orEmpty().lowercase()
             if (hint.contains("ers") || hint.contains("pin") || hint.contains("পিন")) {
-                if (setText(node, pin)) return true
+                pinField = node
+                break
             }
         }
+        // Confirm পেজে সাধারণত একটাই editable field থাকে (PIN-এর ঘর)।
+        if (pinField == null && edits.size == 1) pinField = edits[0]
+        if (pinField == null) return false
 
-        // On the supplied Cockpit screen there is normally one editable field
-        // after the masked "ERS PIN দিন" label.
-        if (edits.size == 1) return setText(edits[0], pin)
-
+        if (fieldMatches(pinField, pin)) return true
+        clearField(pinField)
+        Thread.sleep(200)
+        if (setTextRobust(pinField, pin)) {
+            Thread.sleep(300)
+            return fieldMatches(pinField, pin)
+        }
         return false
+    }
+
+    /**
+     * v13: confirm পেজে দেখানো টাকার অঙ্ক (যেমন "20 TK") আমাদের amount-এর সাথে
+     * মেলে কিনা। না মিললে রিচার্জ সাবমিট করা হবে না (টাকার গরমিল রোধে)।
+     */
+    private fun confirmAmountMatches(root: AccessibilityNodeInfo, amount: String): Boolean {
+        val want = digitsOnly(amount)
+        if (want.isEmpty()) return false
+        val tkNodes = ArrayList<AccessibilityNodeInfo>()
+        collectWithText(root, "TK", tkNodes)
+        for (n in tkNodes) {
+            try {
+                n.refresh()
+                if (digitsOnly(n.text?.toString().orEmpty()) == want) return true
+            } catch (_: Exception) { }
+        }
+        return false
+    }
+
+    private fun collectWithText(node: AccessibilityNodeInfo, wanted: String, out: MutableList<AccessibilityNodeInfo>) {
+        try {
+            if (node.text?.toString()?.contains(wanted, ignoreCase = true) == true) out.add(node)
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { collectWithText(it, wanted, out) }
+            }
+        } catch (_: Exception) { }
     }
 
     private fun setText(node: AccessibilityNodeInfo, value: String): Boolean {
