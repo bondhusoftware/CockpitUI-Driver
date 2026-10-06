@@ -24,6 +24,8 @@ object DriverSession {
     // v19: নিচে লগে নম্বরের পাশে স্ট্যাটাস — ক্লিকে বিস্তারিত
     @Volatile var statuses: List<String> = emptyList()
     @Volatile var statusDetails: List<String> = emptyList()
+    // v22: fill কোথায় আটকাচ্ছে — স্ট্যাটাসে দেখানোর জন্য
+    @Volatile var fillDebug: String = ""
 
     val totalCount: Int get() = queue.size
 
@@ -55,6 +57,7 @@ object DriverSession {
         pinAttempts = 0
         statuses = requests.map { "⏳ অপেক্ষায়" }
         statusDetails = requests.map { "" }
+        fillDebug = ""
         running = true
         state = DriverState.OPENING
         lastMessage = if (requests.size > 1) {

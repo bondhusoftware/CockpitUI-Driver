@@ -91,13 +91,19 @@ class CockpitAccessibilityService : AccessibilityService() {
             if (!filled) {
                 DriverSession.fillAttempts++
                 if (DriverSession.fillAttempts > 8) {
-                    DriverSession.stop("ফিল্ডে বসানো যাচ্ছে না — manually চেক করুন")
+                    val dbg8 = DriverSession.fillDebug
+                    DriverSession.stop(
+                        "ফিল্ডে বসানো যাচ্ছে না — manually চেক করুন" +
+                            (if (dbg8.isNotBlank()) " [$dbg8]" else "")
+                    )
                     return
                 }
                 DriverSession.state = DriverState.ENTERING_AMOUNT
                 val total = DriverSession.totalCount
+                val dbg = DriverSession.fillDebug
                 DriverSession.lastMessage =
-                    if (total > 1) "বাল্ক: ${total}টি নম্বর বসানো হচ্ছে" else "নম্বর ও পরিমাণ বসানো হচ্ছে"
+                    (if (total > 1) "বাল্ক: ${total}টি নম্বর বসানো হচ্ছে" else "নম্বর ও পরিমাণ বসানো হচ্ছে") +
+                        (if (dbg.isNotBlank()) " [$dbg]" else "")
                 handler.postDelayed({ drive() }, 900)
                 return
             }
@@ -280,19 +286,40 @@ class CockpitAccessibilityService : AccessibilityService() {
      */
     private fun fillAllRows(root: AccessibilityNodeInfo): Boolean {
         val requests = DriverSession.queue
-        if (requests.isEmpty()) return false
+        if (requests.isEmpty()) {
+            DriverSession.fillDebug = "queue খালি"
+            return false
+        }
         var cur = root
         // 1. যতগুলো রিকোয়েস্ট ততগুলো রো বানাও
         var guard = 0
-        while (countRows(cur) < requests.size && guard < 12) {
+        var rows = countRows(cur)
+        while (rows < requests.size && guard < 12) {
             guard++
-            if (!tapPlusButton(cur)) return false
+            val tapped = tapPlusButton(cur)
+            if (!tapped) {
+                DriverSession.fillDebug = "প্লাস বাটন পাওয়া যায়নি (rows=$rows)"
+                return false
+            }
             Thread.sleep(900)
-            cur = rootInActiveWindow ?: return false
+            val fresh = rootInActiveWindow
+            if (fresh == null) {
+                DriverSession.fillDebug = "রুট নাল (প্লাসের পর)"
+                return false
+            }
+            cur = fresh
+            rows = countRows(cur)
         }
-        if (countRows(cur) < requests.size) return false
+        if (rows < requests.size) {
+            DriverSession.fillDebug = "রো বাড়েনি: $rows/${requests.size}"
+            return false
+        }
         // 2. v17-এর collectEditable দিয়ে ফিল্ড তুলে রো অনুযায়ী (উপর-নিচ) জোড়া মিলাও
-        val paired = pairRowFields(cur) ?: return false
+        val paired = pairRowFields(cur)
+        if (paired == null) {
+            DriverSession.fillDebug = "ফিল্ড জোড়া মেলেনি"
+            return false
+        }
         val numbers = paired.first
         val amounts = paired.second
         // 3. v17-এর check-first প্যাটার্নে প্রতি রো ভরো
@@ -309,12 +336,27 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
         // 4. তাজা root দিয়ে যাচাই
         Thread.sleep(400)
-        val r2 = rootInActiveWindow ?: return false
-        val paired2 = pairRowFields(r2) ?: return false
-        for (i in requests.indices) {
-            if (!fieldMatches(paired2.first[i], requests[i].phone)) return false
-            if (!fieldMatches(paired2.second[i], requests[i].amount)) return false
+        val r2 = rootInActiveWindow
+        if (r2 == null) {
+            DriverSession.fillDebug = "রুট নাল (যাচাইয়ে)"
+            return false
         }
+        val paired2 = pairRowFields(r2)
+        if (paired2 == null) {
+            DriverSession.fillDebug = "যাচাইয়ে ফিল্ড মেলেনি"
+            return false
+        }
+        for (i in requests.indices) {
+            if (!fieldMatches(paired2.first[i], requests[i].phone)) {
+                DriverSession.fillDebug = "যাচাই ব্যর্থ: রো ${i + 1} নম্বর"
+                return false
+            }
+            if (!fieldMatches(paired2.second[i], requests[i].amount)) {
+                DriverSession.fillDebug = "যাচাই ব্যর্থ: রো ${i + 1} পরিমাণ"
+                return false
+            }
+        }
+        DriverSession.fillDebug = ""
         return true
     }
 
@@ -357,11 +399,48 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** v18: "+" বাটন চেপে নতুন রো নেয়। */
+    /** v22: "+" বাটন চেপে নতুন রো নেয় — text, content-desc, তারপর gesture। */
     private fun tapPlusButton(root: AccessibilityNodeInfo): Boolean {
         val btn = findButtonByExactText(root, "+")
         if (btn != null && btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        // content-desc-এ "+" বা "add" থাকলে (ImageButton ধরনের বাটন)
+        val byDesc = findClickableByDesc(root, listOf("+", "add"))
+        if (byDesc != null) {
+            if (byDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            val r = Rect()
+            try {
+                byDesc.getBoundsInScreen(r)
+                if (!r.isEmpty) return tapAt(r.centerX().toFloat(), r.centerY().toFloat())
+            } catch (_: Exception) { }
+        }
         return clickText(root, listOf("+"))
+    }
+
+    /** v22: content-desc-এ keyword মিলিয়ে clickable node খোঁজে। */
+    private fun findClickableByDesc(root: AccessibilityNodeInfo, keywords: List<String>): AccessibilityNodeInfo? {
+        var result: AccessibilityNodeInfo? = null
+        var fallback: AccessibilityNodeInfo? = null
+        fun walk(n: AccessibilityNodeInfo?) {
+            if (n == null || result != null) return
+            try {
+                val desc = n.contentDescription?.toString().orEmpty()
+                if (keywords.any { desc.contains(it, ignoreCase = true) }) {
+                    var c: AccessibilityNodeInfo? = n
+                    repeat(6) {
+                        val cur = c ?: return@repeat
+                        if (cur.isClickable) {
+                            result = cur
+                            return
+                        }
+                        c = cur.parent
+                    }
+                    if (fallback == null) fallback = n
+                }
+                for (i in 0 until n.childCount) walk(n.getChild(i))
+            } catch (_: Exception) { }
+        }
+        walk(root)
+        return result ?: fallback
     }
 
     /** v13: শুধু সংখ্যা রাখে; বাংলা সংখ্যাকেও ASCII-তে নরমালাইজ করে। */
