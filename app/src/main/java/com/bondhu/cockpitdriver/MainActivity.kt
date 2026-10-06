@@ -97,6 +97,12 @@ class MainActivity : Activity() {
         }
         root.addView(stopButton, lp())
 
+        val dumpButton = Button(this).apply {
+            text = "📋 স্ক্রিন ডাম্প শেয়ার"
+            setOnClickListener { shareNodeDump() }
+        }
+        root.addView(dumpButton, lp())
+
         status = TextView(this).apply {
             textSize = 16f
             setPadding(0, 18, 0, 0)
@@ -229,6 +235,20 @@ class MainActivity : Activity() {
 
     private fun toast(s: String) =
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    private fun shareNodeDump() {
+        val dump = DriverSession.lastNodeDump
+        if (dump.isBlank()) {
+            toast("এখনো কোনো ডাম্প নেই — একবার RUN করে Cockpit-এর রিচার্জ স্ক্রিনে যান")
+            return
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Cockpit screen dump")
+            putExtra(Intent.EXTRA_TEXT, dump)
+        }
+        startActivity(Intent.createChooser(send, "ডাম্প পাঠান"))
+    }
 
     private fun lp() = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,

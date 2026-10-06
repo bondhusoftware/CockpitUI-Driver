@@ -78,11 +78,12 @@ class CockpitAccessibilityService : AccessibilityService() {
         val onDashboard = containsAny(root, listOf("পরবর্তী")) &&
             containsAny(root, listOf("পাওয়ারলোড", "ফ্লেক্সিরিটেইল"))
         if (onDashboard) {
-            val phoneSet = containsText(root, DriverSession.phone)
-            val amountSet = containsText(root, DriverSession.amount)
-
-            if (!phoneSet || !amountSet) {
-                fillRechargeFields(root)
+            // v12: fillRechargeFields() নিজেই প্রতিটি ফিল্ডের ভেতরে যাচাই করে —
+            // পুরো স্ক্রিনে substring খোঁজা হয় না, তাই নম্বর/POS লেখার ভেতরে
+            // amount-এর সংখ্যা মিলে গিয়ে ভুল "বসানো হয়েছে" রিপোর্ট হবে না।
+            // ডায়াগনস্টিকের জন্য স্ক্রিনের node ডাম্পও সংরক্ষণ করা হয়।
+            DriverSession.lastNodeDump = captureNodeDump(root)
+            if (!fillRechargeFields(root)) {
                 DriverSession.state = DriverState.ENTERING_AMOUNT
                 DriverSession.lastMessage = "নম্বর ও পরিমাণ বসানো হচ্ছে"
                 handler.postDelayed({ drive() }, 450)
@@ -149,9 +150,6 @@ class CockpitAccessibilityService : AccessibilityService() {
         collectEditable(root, edits)
         if (edits.size < 2) return false
 
-        var phoneSet = containsText(root, DriverSession.phone)
-        var amountSet = containsText(root, DriverSession.amount)
-
         var phoneField: AccessibilityNodeInfo? = null
         var amountField: AccessibilityNodeInfo? = null
         for (e in edits) {
@@ -167,14 +165,23 @@ class CockpitAccessibilityService : AccessibilityService() {
             amountField = edits.firstOrNull { it != phoneField } ?: edits[1]
         }
 
-        if (!phoneSet && setTextRobust(phoneField, DriverSession.phone)) phoneSet = true
+        // v12: প্রতিটি ফিল্ডের নিজের text-এর ভেতরে যাচাই — পুরো স্ক্রিনে নয়।
+        var phoneSet = fieldContains(phoneField, DriverSession.phone)
+        var amountSet = fieldContains(amountField, DriverSession.amount)
+
+        if (!phoneSet && setTextRobust(phoneField, DriverSession.phone)) {
+            phoneSet = fieldContains(phoneField, DriverSession.phone)
+        }
 
         // Amount: try the detected field first, then ALL other editable fields
         if (!amountSet) {
             val tried = mutableSetOf<AccessibilityNodeInfo>()
             if (amountField != null) {
                 tried.add(amountField)
-                if (setTextRobust(amountField, DriverSession.amount)) amountSet = true
+                if (setTextRobust(amountField, DriverSession.amount)) {
+                    Thread.sleep(300)
+                    if (fieldContains(amountField, DriverSession.amount)) amountSet = true
+                }
             }
             if (!amountSet) {
                 for (e in edits) {
@@ -182,7 +189,7 @@ class CockpitAccessibilityService : AccessibilityService() {
                     if (setTextRobust(e, DriverSession.amount)) {
                         // Verify the text actually stuck
                         Thread.sleep(300)
-                        if (e.text?.toString()?.contains(DriverSession.amount) == true) {
+                        if (fieldContains(e, DriverSession.amount)) {
                             amountSet = true
                             break
                         }
@@ -192,6 +199,71 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
 
         return phoneSet && amountSet
+    }
+
+    /**
+     * v12: শুধু ওই ফিল্ডের নিজের text-এ খোঁজে — স্ক্রিনের অন্য লেখায়
+     * (নম্বর / POS id) সংখ্যা মিলে গিয়ে ভুয়া "বসানো হয়েছে" হবে না।
+     */
+    private fun fieldContains(field: AccessibilityNodeInfo?, value: String): Boolean {
+        if (field == null || value.isEmpty()) return false
+        return try {
+            field.refresh()
+            field.text?.toString()?.contains(value) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * v12 diagnostic: accessibility tree-এর সংক্ষিপ্ত ডাম্প।
+     * amount ফিল্ডটা আসলে কী ধরনের view (class/hint/editable) তা দেখার জন্য —
+     * MainActivity-র "স্ক্রিন ডাম্প শেয়ার" বোতামে পাঠানো যায়।
+     */
+    private fun captureNodeDump(root: AccessibilityNodeInfo): String {
+        val sb = StringBuilder()
+        sb.append("package=").append(root.packageName).append('\n')
+        var count = 0
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || count >= 800) return
+            count++
+            val cls = node.className?.toString()?.substringAfterLast('.') ?: "?"
+            val text = node.text?.toString()?.take(40).orEmpty().replace('\n', ' ')
+            val hint = try {
+                node.hintText?.toString()?.take(30).orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+            val desc = node.contentDescription?.toString()?.take(30).orEmpty().replace('\n', ' ')
+            val flags = StringBuilder()
+            if (node.isEditable) flags.append('E')
+            if (node.isFocusable) flags.append('F')
+            if (node.isFocused) flags.append('*')
+            if (node.isClickable) flags.append('C')
+            if (node.isScrollable) flags.append('S')
+            val b = Rect()
+            try {
+                node.getBoundsInScreen(b)
+            } catch (_: Exception) { }
+            sb.append("  ".repeat(minOf(depth, 12)))
+                .append('[').append(cls).append(']')
+                .append(if (flags.isNotEmpty()) " {$flags}" else "")
+                .append(if (text.isNotEmpty()) " text=\"$text\"" else "")
+                .append(if (hint.isNotEmpty()) " hint=\"$hint\"" else "")
+                .append(if (desc.isNotEmpty()) " desc=\"$desc\"" else "")
+                .append(" [${b.left},${b.top}][${b.right},${b.bottom}]")
+                .append('\n')
+            for (i in 0 until node.childCount) {
+                try {
+                    walk(node.getChild(i), depth + 1)
+                } catch (_: Exception) { }
+            }
+        }
+        try {
+            walk(root, 0)
+        } catch (_: Exception) { }
+        sb.append("nodes=").append(count).append('\n')
+        return sb.toString()
     }
 
     private fun setTextRobust(node: AccessibilityNodeInfo, value: String): Boolean {

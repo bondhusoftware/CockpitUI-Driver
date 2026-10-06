@@ -7,6 +7,7 @@ object DriverSession {
     @Volatile var state: DriverState = DriverState.IDLE
     @Volatile var nextAttempts: Int = 0
     @Volatile var lastMessage: String = "প্রস্তুত"
+    @Volatile var lastNodeDump: String = ""
 
     fun start(phoneNumber: String, rechargeAmount: String) {
         phone = phoneNumber
