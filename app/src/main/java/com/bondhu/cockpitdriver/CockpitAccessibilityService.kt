@@ -168,7 +168,28 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
 
         if (!phoneSet && setTextRobust(phoneField, DriverSession.phone)) phoneSet = true
-        if (!amountSet && setTextRobust(amountField, DriverSession.amount)) amountSet = true
+
+        // Amount: try the detected field first, then ALL other editable fields
+        if (!amountSet) {
+            val tried = mutableSetOf<AccessibilityNodeInfo>()
+            if (amountField != null) {
+                tried.add(amountField)
+                if (setTextRobust(amountField, DriverSession.amount)) amountSet = true
+            }
+            if (!amountSet) {
+                for (e in edits) {
+                    if (e == phoneField || e in tried) continue
+                    if (setTextRobust(e, DriverSession.amount)) {
+                        // Verify the text actually stuck
+                        Thread.sleep(300)
+                        if (e.text?.toString()?.contains(DriverSession.amount) == true) {
+                            amountSet = true
+                            break
+                        }
+                    }
+                }
+            }
+        }
 
         return phoneSet && amountSet
     }
