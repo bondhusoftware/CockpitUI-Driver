@@ -12,6 +12,7 @@ object DriverSession {
     @Volatile var pinAttempts: Int = 0
     @Volatile var okAttempts: Int = 0
     @Volatile var lastMessage: String = "প্রস্তুত"
+    @Volatile var lastNodeDump: String = ""
 
     // v15: bulk queue — একের পর এক রিচার্জ
     @Volatile var queue: List<RechargeRequest> = emptyList()
