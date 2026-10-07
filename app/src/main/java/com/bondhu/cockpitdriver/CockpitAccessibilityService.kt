@@ -1124,15 +1124,33 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v30: অফার লিস্ট নিচে স্ক্রল করো।
-     * প্রথমে scrollable node-এ ACTION_SCROLL_FORWARD, না হলে swipe-up gesture।
+     * v32: অফার লিস্ট নিচে স্ক্রল করো।
+     * সবচেয়ে বড় scrollable node-টা খুঁজো (অফার লিস্ট — ট্যাব বার নয়),
+     * তারপর ACTION_SCROLL_FORWARD; না হলে ওই node-এর মাঝে swipe।
      */
     private fun scrollOfferList(root: AccessibilityNodeInfo): Boolean {
-        val scrollable = findScrollableNode(root)
+        val scrollable = findLargestScrollable(root)
         if (scrollable != null) {
             try {
                 if (scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
                     return true
+                }
+            } catch (_: Exception) { }
+            // ওই লিস্টের ভেতরে swipe
+            try {
+                val r = android.graphics.Rect()
+                scrollable.getBoundsInScreen(r)
+                if (!r.isEmpty) {
+                    val x = r.centerX().toFloat()
+                    val y1 = (r.top + (r.height() * 0.75)).toFloat()
+                    val y2 = (r.top + (r.height() * 0.25)).toFloat()
+                    val path = android.graphics.Path().apply {
+                        moveTo(x, y1)
+                        lineTo(x, y2)
+                    }
+                    val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 350)
+                    val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
+                    if (dispatchGesture(gesture, null, null)) return true
                 }
             } catch (_: Exception) { }
         }
@@ -1152,6 +1170,31 @@ class CockpitAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {
             false
         }
+    }
+
+    /** v32: সব scrollable-এর মধ্যে সবচেয়ে বড়টা (অফার লিস্ট) */
+    private fun findLargestScrollable(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var best: AccessibilityNodeInfo? = null
+        var bestArea = 0
+        fun visit(n: AccessibilityNodeInfo) {
+            try {
+                if (n.isScrollable) {
+                    val r = android.graphics.Rect()
+                    n.getBoundsInScreen(r)
+                    val area = r.width() * r.height()
+                    if (area > bestArea) {
+                        bestArea = area
+                        best = n
+                    }
+                }
+            } catch (_: Exception) { }
+            for (i in 0 until n.childCount) {
+                val c = try { n.getChild(i) } catch (_: Exception) { null } ?: continue
+                visit(c)
+            }
+        }
+        try { visit(root) } catch (_: Exception) { }
+        return best
     }
 
     private fun findScrollableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
