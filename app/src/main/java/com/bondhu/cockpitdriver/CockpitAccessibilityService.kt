@@ -649,12 +649,31 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * v29: পাওয়ারলোড বাটনের সম্ভাব্য বানান — Unicode ভিন্নতার জন্য সবগুলো চেষ্টা করো।
+     * (য় = U+09DF vs য+় = U+09AF+U+09BC — দেখতে একই, কোড ভিন্ন!)
+     */
+    private val powerloadCandidates = listOf(
+        "পাওয়ারলোড",  // ব্যবহারকারীর বানান
+        "পাওয়ারলোড",  // v26-এর বানান
+        "পাওয়ার লোড",
+        "পাওয়ার"
+    )
+
+    private fun findPowerloadNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        for (c in powerloadCandidates) {
+            val n = findNodeByText(root, c)
+            if (n != null) return n
+        }
+        return null
+    }
+
+    /**
      * v28: পাওয়ারলোড বাটনে ট্যাপ — টেক্সট নোডের bounds-এ সরাসরি gesture।
      * (v27-এর বাগ: outermost clickable ancestor-এর center-এ ট্যাপ যাচ্ছিল,
      *  যা বাটনের বাইরে পড়তে পারে। টেক্সট বাটনের ভেতরেই থাকে।)
      */
     private fun tapPowerloadButton(root: AccessibilityNodeInfo): Boolean {
-        val node = findNodeByText(root, "পাওয়ারলোড") ?: return false
+        val node = findPowerloadNode(root) ?: return false
         val r = Rect()
         try {
             node.getBoundsInScreen(r)
