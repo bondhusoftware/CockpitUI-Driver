@@ -313,8 +313,8 @@ class CockpitAccessibilityService : AccessibilityService() {
                 return false
             }
             // রো i-তে নম্বর+পরিমাণ বসাও (v17-এর check-first প্যাটার্ন)
-            val paired = pairRowFields(cur, i + 1)
-            if (paired == null) {
+            val paired = getPairedRows(cur)
+            if (paired.first.size <= i || paired.second.size <= i) {
                 DriverSession.fillDebug = "ফিল্ড জোড়া মেলেনি (রো ${i + 1})"
                 return false
             }
@@ -338,8 +338,8 @@ class CockpitAccessibilityService : AccessibilityService() {
             DriverSession.fillDebug = "রুট নাল (যাচাইয়ে)"
             return false
         }
-        val paired2 = pairRowFields(r2, requests.size)
-        if (paired2 == null) {
+        val paired2 = getPairedRows(r2)
+        if (paired2.first.size < requests.size || paired2.second.size < requests.size) {
             DriverSession.fillDebug = "যাচাইয়ে ফিল্ড মেলেনি"
             return false
         }
@@ -357,46 +357,63 @@ class CockpitAccessibilityService : AccessibilityService() {
         return true
     }
 
-    /** v23: v17-এর collectEditable + hint দিয়ে নম্বর/পরিমাণ ফিল্ড জোড়া মিলায় (উপর থেকে নিচে)। */
-    private fun pairRowFields(root: AccessibilityNodeInfo, minNeed: Int): Pair<List<AccessibilityNodeInfo>, List<AccessibilityNodeInfo>>? {
-        val edits = ArrayList<AccessibilityNodeInfo>()
-        collectEditable(root, edits)
-        val numbers = ArrayList<AccessibilityNodeInfo>()
-        val amounts = ArrayList<AccessibilityNodeInfo>()
-        for (e in edits) {
-            val hint = try { e.hintText?.toString().orEmpty() } catch (_: Exception) { "" }
-            if (hint.contains("পরিমাণ") || hint.contains("পরিমান") ||
+    /** v24: amount hint চেনার হেলপার। */
+    private fun isAmountHint(hint: String): Boolean {
+        return hint.contains("পরিমাণ") || hint.contains("পরিমান") ||
                 hint.contains("amount", ignoreCase = true)
-            ) {
-                amounts.add(e)
-            } else {
-                numbers.add(e)
-            }
+    }
+
+    private fun hintOf(e: AccessibilityNodeInfo): String {
+        return try { e.hintText?.toString().orEmpty() } catch (_: Exception) { "" }
+    }
+
+    private fun boundsLeft(n: AccessibilityNodeInfo): Int {
+        val r = Rect()
+        return try {
+            n.getBoundsInScreen(r)
+            r.left
+        } catch (_: Exception) {
+            0
         }
-        numbers.sortBy { boundsTop(it) }
-        amounts.sortBy { boundsTop(it) }
-        if (numbers.size < minNeed || amounts.size < minNeed) return null
-        return numbers to amounts
     }
 
     /**
-     * v23: আসল রো সংখ্যা গোনে — কত দরকার তার উপর নির্ভর করে না।
-     * (আগের বাগ: pairRowFields-এর minNeed-এর কারণে ১ রো থাকতেও ০ রিপোর্ট করত,
-     *  ফলে "+" থামতো না — ২ নম্বরে ৫ ফিল্ড হয়ে যেত।)
+     * v24: রো-এর ফিল্ড জোড়া মিলায়। প্রথমে hint দিয়ে, না মিললে
+     * v17-স্টাইলে position অনুযায়ী (উপর-নিচ, তারপর বাম-ডান) জোড়া মিলায়।
+     * (amount-এর hint সবসময় পাওয়া যায় না — v17-এর fallback-ই আসলে কাজ করত।)
      */
-    private fun countRows(root: AccessibilityNodeInfo): Int {
+    private fun getPairedRows(root: AccessibilityNodeInfo): Pair<List<AccessibilityNodeInfo>, List<AccessibilityNodeInfo>> {
         val edits = ArrayList<AccessibilityNodeInfo>()
         collectEditable(root, edits)
-        var count = 0
+
+        // 1. hint-based
+        val numbers = ArrayList<AccessibilityNodeInfo>()
+        val amounts = ArrayList<AccessibilityNodeInfo>()
         for (e in edits) {
-            val hint = try { e.hintText?.toString().orEmpty() } catch (_: Exception) { "" }
-            if (!(hint.contains("পরিমাণ") || hint.contains("পরিমান") ||
-                        hint.contains("amount", ignoreCase = true))
-            ) {
-                count++
-            }
+            if (isAmountHint(hintOf(e))) amounts.add(e) else numbers.add(e)
         }
-        return count
+        numbers.sortBy { boundsTop(it) }
+        amounts.sortBy { boundsTop(it) }
+        if (amounts.isNotEmpty() && numbers.size == amounts.size) {
+            return numbers to amounts
+        }
+
+        // 2. positional fallback: (top, left) সর্ট করে পরপর জোড়া
+        val sorted = edits.sortedWith(compareBy({ boundsTop(it) }, { boundsLeft(it) }))
+        val pNumbers = ArrayList<AccessibilityNodeInfo>()
+        val pAmounts = ArrayList<AccessibilityNodeInfo>()
+        var idx = 0
+        while (idx + 1 < sorted.size) {
+            pNumbers.add(sorted[idx])
+            pAmounts.add(sorted[idx + 1])
+            idx += 2
+        }
+        return pNumbers to pAmounts
+    }
+
+    /** v24: আসল রো সংখ্যা — getPairedRows থেকে। */
+    private fun countRows(root: AccessibilityNodeInfo): Int {
+        return getPairedRows(root).first.size
     }
 
     private fun boundsTop(n: AccessibilityNodeInfo): Int {
