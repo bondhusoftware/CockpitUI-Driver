@@ -1024,9 +1024,32 @@ class CockpitAccessibilityService : AccessibilityService() {
         val exact = root.findAccessibilityNodeInfosByText(wanted)
         if (exact.isNotEmpty()) return exact[0]
 
+        // v29: বাংলা Unicode normalization — "ো" (composed) vs "ে"+"া" (decomposed)
+        // অ্যাপে একরকম, সার্চে আরেকরকম থাকতে পারে।
+        val wantedNorm = normalizeBn(wanted)
         val text = root.text?.toString().orEmpty()
         val desc = root.contentDescription?.toString().orEmpty()
-        if (text.contains(wanted, ignoreCase = true) || desc.contains(wanted, ignoreCase = true)) {
+        if (normalizeBn(text).contains(wantedNorm, ignoreCase = true) ||
+            normalizeBn(desc).contains(wantedNorm, ignoreCase = true)) {
+            return root
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findNodeByText(child, wanted)
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /** v29: বাংলা টেক্সট NFC normalize করে — Unicode ভিন্ন রূপে থাকলেও মিলবে। */
+    private fun normalizeBn(s: String): String {
+        return try {
+            java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC)
+        } catch (_: Exception) {
+            s
+        }
+    }
             return root
         }
 
