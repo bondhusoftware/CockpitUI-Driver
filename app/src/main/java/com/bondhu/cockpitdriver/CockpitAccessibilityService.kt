@@ -357,6 +357,17 @@ class CockpitAccessibilityService : AccessibilityService() {
                     return
                 }
                 DriverSession.plWaitCount = 0
+                // v31: সবসময় "সব পি.এল" ট্যাবে যাও — তারপর স্ক্রল করে অফার খুঁজো
+                if (!DriverSession.plAllTabTapped) {
+                    DriverSession.plAllTabTapped = true
+                    if (tapAllPlTab(root)) {
+                        DriverSession.plScrolls = 0
+                        DriverSession.lastMessage = "⚡ সব পাওয়ারলোড অফার দেখা হচ্ছে"
+                        handler.postDelayed({ drive() }, 1500)
+                        return
+                    }
+                    // ট্যাব না থাকলে সরাসরি খুঁজো
+                }
                 if (tapOfferWithPrice(root, amount)) {
                     DriverSession.plStage = 3
                     DriverSession.plScrolls = 0
@@ -374,12 +385,6 @@ class CockpitAccessibilityService : AccessibilityService() {
                     }
                 }
                 DriverSession.plScrolls = 0
-                // অফার পাওয়া যায়নি — "সব পি.এল" ট্যাবে দেখো
-                if (tapAllPlTab(root)) {
-                    DriverSession.lastMessage = "⚡ সব পাওয়ারলোড অফার দেখা হচ্ছে"
-                    handler.postDelayed({ drive() }, 1500)
-                    return
-                }
                 // তাও না পেলে normal flow-তে ফিরে যাও (সরাসরি পরবর্তী)
                 DriverSession.plOfferNotFound = true
                 DriverSession.isPlBatch = false

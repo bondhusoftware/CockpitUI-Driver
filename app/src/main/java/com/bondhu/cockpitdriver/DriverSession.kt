@@ -45,6 +45,8 @@ object DriverSession {
     @Volatile var plWaitCount: Int = 0
     // v30: অফার লিস্টে স্ক্রল কাউন্টার
     @Volatile var plScrolls: Int = 0
+    // v31: "সব পি.এল" ট্যাবে ট্যাপ করা হয়েছে কিনা
+    @Volatile var plAllTabTapped: Boolean = false
 
     val totalCount: Int get() = queue.size
 
@@ -142,6 +144,7 @@ object DriverSession {
         plOfferNotFound = false
         plWaitCount = 0
         plScrolls = 0
+        plAllTabTapped = false
         val first = reqs.firstOrNull()
         phone = first?.phone.orEmpty()
         amount = first?.amount.orEmpty()
