@@ -213,6 +213,9 @@ class MainActivity : Activity() {
             if (nonEmpty > bulk.size) {
                 toast("${nonEmpty - bulk.size}টি লাইন বোঝা যায়নি — বাকি ${bulk.size}টি চলছে")
             }
+            if (bulk.size > 5) {
+                toast("সর্বোচ্চ ৫টা নম্বর একসাথে — প্রথম ৫টা চলছে")
+            }
             bulk
         } else {
             val phone = phoneInput.text.toString().trim()

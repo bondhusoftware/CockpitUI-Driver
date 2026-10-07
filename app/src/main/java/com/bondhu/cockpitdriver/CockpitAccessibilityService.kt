@@ -281,8 +281,8 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v21: বাল্ক — "+" চেপে রো বাড়িয়ে v17-এর প্রমাণিত পদ্ধতিতে প্রতি রো ভরে।
-     * ফিল্ড সংগ্রহে v17-এর collectEditable ব্যবহার করা হয়।
+     * v23: বাল্ক — একটা রো ভরো → আরও নম্বর থাকলে "+" চেপে পরের রো → ভরো।
+     * (সর্বোচ্চ ৫ রো — Cockpit-এর সীমা।)
      */
     private fun fillAllRows(root: AccessibilityNodeInfo): Boolean {
         val requests = DriverSession.queue
@@ -291,57 +291,54 @@ class CockpitAccessibilityService : AccessibilityService() {
             return false
         }
         var cur = root
-        // 1. যতগুলো রিকোয়েস্ট ততগুলো রো বানাও
-        var guard = 0
-        var rows = countRows(cur)
-        while (rows < requests.size && guard < 12) {
-            guard++
-            val tapped = tapPlusButton(cur)
-            if (!tapped) {
-                DriverSession.fillDebug = "প্লাস বাটন পাওয়া যায়নি (rows=$rows)"
-                return false
-            }
-            Thread.sleep(900)
-            val fresh = rootInActiveWindow
-            if (fresh == null) {
-                DriverSession.fillDebug = "রুট নাল (প্লাসের পর)"
-                return false
-            }
-            cur = fresh
-            rows = countRows(cur)
-        }
-        if (rows < requests.size) {
-            DriverSession.fillDebug = "রো বাড়েনি: $rows/${requests.size}"
-            return false
-        }
-        // 2. v17-এর collectEditable দিয়ে ফিল্ড তুলে রো অনুযায়ী (উপর-নিচ) জোড়া মিলাও
-        val paired = pairRowFields(cur)
-        if (paired == null) {
-            DriverSession.fillDebug = "ফিল্ড জোড়া মেলেনি"
-            return false
-        }
-        val numbers = paired.first
-        val amounts = paired.second
-        // 3. v17-এর check-first প্যাটার্নে প্রতি রো ভরো
         for (i in requests.indices) {
-            if (!fieldMatches(numbers[i], requests[i].phone)) {
-                clearField(numbers[i])
-                setTextRobust(numbers[i], requests[i].phone)
+            // রো i আছে কিনা দেখো, না থাকলে "+" চেপে বানাও
+            var guard = 0
+            while (countRows(cur) <= i && guard < 12) {
+                guard++
+                if (!tapPlusButton(cur)) {
+                    DriverSession.fillDebug = "প্লাস বাটন পাওয়া যায়নি (রো ${i + 1})"
+                    return false
+                }
+                Thread.sleep(900)
+                val fresh = rootInActiveWindow
+                if (fresh == null) {
+                    DriverSession.fillDebug = "রুট নাল (প্লাসের পর)"
+                    return false
+                }
+                cur = fresh
             }
-            if (!fieldMatches(amounts[i], requests[i].amount)) {
-                clearField(amounts[i])
-                setTextRobust(amounts[i], requests[i].amount)
+            if (countRows(cur) <= i) {
+                DriverSession.fillDebug = "রো ${i + 1} বানানো যায়নি"
+                return false
+            }
+            // রো i-তে নম্বর+পরিমাণ বসাও (v17-এর check-first প্যাটার্ন)
+            val paired = pairRowFields(cur, i + 1)
+            if (paired == null) {
+                DriverSession.fillDebug = "ফিল্ড জোড়া মেলেনি (রো ${i + 1})"
+                return false
+            }
+            val nf = paired.first[i]
+            val af = paired.second[i]
+            if (!fieldMatches(nf, requests[i].phone)) {
+                clearField(nf)
+                setTextRobust(nf, requests[i].phone)
+            }
+            if (!fieldMatches(af, requests[i].amount)) {
+                clearField(af)
+                setTextRobust(af, requests[i].amount)
             }
             Thread.sleep(250)
+            cur = rootInActiveWindow ?: cur
         }
-        // 4. তাজা root দিয়ে যাচাই
+        // যাচাই: সব রো-তে ঠিক নম্বর+পরিমাণ বসেছে কিনা
         Thread.sleep(400)
         val r2 = rootInActiveWindow
         if (r2 == null) {
             DriverSession.fillDebug = "রুট নাল (যাচাইয়ে)"
             return false
         }
-        val paired2 = pairRowFields(r2)
+        val paired2 = pairRowFields(r2, requests.size)
         if (paired2 == null) {
             DriverSession.fillDebug = "যাচাইয়ে ফিল্ড মেলেনি"
             return false
@@ -360,8 +357,8 @@ class CockpitAccessibilityService : AccessibilityService() {
         return true
     }
 
-    /** v21: v17-এর collectEditable + hint দিয়ে নম্বর/পরিমাণ ফিল্ড জোড়া মিলায় (উপর থেকে নিচে)। */
-    private fun pairRowFields(root: AccessibilityNodeInfo): Pair<List<AccessibilityNodeInfo>, List<AccessibilityNodeInfo>>? {
+    /** v23: v17-এর collectEditable + hint দিয়ে নম্বর/পরিমাণ ফিল্ড জোড়া মিলায় (উপর থেকে নিচে)। */
+    private fun pairRowFields(root: AccessibilityNodeInfo, minNeed: Int): Pair<List<AccessibilityNodeInfo>, List<AccessibilityNodeInfo>>? {
         val edits = ArrayList<AccessibilityNodeInfo>()
         collectEditable(root, edits)
         val numbers = ArrayList<AccessibilityNodeInfo>()
@@ -378,15 +375,28 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
         numbers.sortBy { boundsTop(it) }
         amounts.sortBy { boundsTop(it) }
-        val need = DriverSession.queue.size
-        if (numbers.size < need || amounts.size < need) return null
+        if (numbers.size < minNeed || amounts.size < minNeed) return null
         return numbers to amounts
     }
 
-    /** v21: রো গোনায় v17-এর collectEditable ব্যবহার করো। */
+    /**
+     * v23: আসল রো সংখ্যা গোনে — কত দরকার তার উপর নির্ভর করে না।
+     * (আগের বাগ: pairRowFields-এর minNeed-এর কারণে ১ রো থাকতেও ০ রিপোর্ট করত,
+     *  ফলে "+" থামতো না — ২ নম্বরে ৫ ফিল্ড হয়ে যেত।)
+     */
     private fun countRows(root: AccessibilityNodeInfo): Int {
-        val paired = pairRowFields(root) ?: return 0
-        return paired.first.size
+        val edits = ArrayList<AccessibilityNodeInfo>()
+        collectEditable(root, edits)
+        var count = 0
+        for (e in edits) {
+            val hint = try { e.hintText?.toString().orEmpty() } catch (_: Exception) { "" }
+            if (!(hint.contains("পরিমাণ") || hint.contains("পরিমান") ||
+                        hint.contains("amount", ignoreCase = true))
+            ) {
+                count++
+            }
+        }
+        return count
     }
 
     private fun boundsTop(n: AccessibilityNodeInfo): Int {

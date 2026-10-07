@@ -43,7 +43,8 @@ object DriverSession {
         startBulk(listOf(RechargeRequest(phoneNumber, rechargeAmount)))
 
     fun startBulk(requests: List<RechargeRequest>) {
-        queue = requests.toList()
+        // v23: Cockpit-এ সর্বোচ্চ ৫ রো — এর বেশি এলে প্রথম ৫টা নেওয়া হয়
+        queue = requests.take(5).toList()
         val first = requests.firstOrNull()
         phone = first?.phone.orEmpty()
         amount = first?.amount.orEmpty()
