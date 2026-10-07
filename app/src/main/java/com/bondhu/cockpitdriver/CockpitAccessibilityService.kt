@@ -359,10 +359,21 @@ class CockpitAccessibilityService : AccessibilityService() {
                 DriverSession.plWaitCount = 0
                 if (tapOfferWithPrice(root, amount)) {
                     DriverSession.plStage = 3
+                    DriverSession.plScrolls = 0
                     DriverSession.lastMessage = "⚡ অফার সিলেক্ট হয়েছে — পরের পেজের অপেক্ষায়"
                     handler.postDelayed({ drive() }, 1500)
                     return
                 }
+                // v30: এই স্ক্রিনে নেই — নিচে স্ক্রল করে খুঁজো (সর্বোচ্চ ১০ বার)
+                if (DriverSession.plScrolls < 10) {
+                    if (scrollOfferList(root)) {
+                        DriverSession.plScrolls++
+                        DriverSession.lastMessage = "⚡ অফার খুঁজছে… (স্ক্রল ${DriverSession.plScrolls})"
+                        handler.postDelayed({ drive() }, 1500)
+                        return
+                    }
+                }
+                DriverSession.plScrolls = 0
                 // অফার পাওয়া যায়নি — "সব পি.এল" ট্যাবে দেখো
                 if (tapAllPlTab(root)) {
                     DriverSession.lastMessage = "⚡ সব পাওয়ারলোড অফার দেখা হচ্ছে"
@@ -1105,6 +1116,49 @@ class CockpitAccessibilityService : AccessibilityService() {
         val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 60)
         val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
         return dispatchGesture(gesture, null, null)
+    }
+
+    /**
+     * v30: অফার লিস্ট নিচে স্ক্রল করো।
+     * প্রথমে scrollable node-এ ACTION_SCROLL_FORWARD, না হলে swipe-up gesture।
+     */
+    private fun scrollOfferList(root: AccessibilityNodeInfo): Boolean {
+        val scrollable = findScrollableNode(root)
+        if (scrollable != null) {
+            try {
+                if (scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                    return true
+                }
+            } catch (_: Exception) { }
+        }
+        // Fallback: স্ক্রিনের মাঝে নিচ থেকে উপরে swipe
+        return try {
+            val metrics = resources.displayMetrics
+            val x = (metrics.widthPixels / 2).toFloat()
+            val y1 = (metrics.heightPixels * 0.75).toFloat()
+            val y2 = (metrics.heightPixels * 0.25).toFloat()
+            val path = android.graphics.Path().apply {
+                moveTo(x, y1)
+                lineTo(x, y2)
+            }
+            val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 350)
+            val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
+            dispatchGesture(gesture, null, null)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun findScrollableNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        try {
+            if (root.isScrollable) return root
+        } catch (_: Exception) { }
+        for (i in 0 until root.childCount) {
+            val child = try { root.getChild(i) } catch (_: Exception) { null } ?: continue
+            val found = findScrollableNode(child)
+            if (found != null) return found
+        }
+        return null
     }
 
     private fun showToast(message: String) {
