@@ -1069,16 +1069,6 @@ class CockpitAccessibilityService : AccessibilityService() {
             s
         }
     }
-            return root
-        }
-
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findNodeByText(child, wanted)
-            if (found != null) return found
-        }
-        return null
-    }
 
     private fun clickText(root: AccessibilityNodeInfo, candidates: List<String>): Boolean {
         val now = System.currentTimeMillis()
