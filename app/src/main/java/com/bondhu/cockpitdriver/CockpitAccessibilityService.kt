@@ -291,22 +291,45 @@ class CockpitAccessibilityService : AccessibilityService() {
             return false
         }
         var cur = root
+
+        // 0. বাড়তি খালি রো থাকলে "-" চেপে সরাও
+        var cleanupGuard = 0
+        while (countRows(cur) > requests.size && cleanupGuard < 6) {
+            cleanupGuard++
+            val pairedC = getPairedRows(cur)
+            val lastIdx = pairedC.first.size - 1
+            if (lastIdx < 0 || !isRowEmpty(pairedC.first, pairedC.second, lastIdx)) break
+            if (!tapMinusOnLastRow(cur)) break
+            Thread.sleep(900)
+            cur = rootInActiveWindow ?: break
+        }
+
+        // 1. প্রতি রো: দরকার হলে "+" চেপে বানাও (নতুন রো আসা পর্যন্ত অপেক্ষা করে), তারপর ভরো
         for (i in requests.indices) {
-            // রো i আছে কিনা দেখো, না থাকলে "+" চেপে বানাও
             var guard = 0
-            while (countRows(cur) <= i && guard < 12) {
+            while (countRows(cur) <= i && guard < 3) {
                 guard++
+                val before = countRows(cur)
                 if (!tapPlusButton(cur)) {
                     DriverSession.fillDebug = "প্লাস বাটন পাওয়া যায়নি (রো ${i + 1})"
                     return false
                 }
-                Thread.sleep(900)
-                val fresh = rootInActiveWindow
-                if (fresh == null) {
-                    DriverSession.fillDebug = "রুট নাল (প্লাসের পর)"
+                // v25: fixed sleep নয় — নতুন রো আসা পর্যন্ত অপেক্ষা করো
+                var waited = 0
+                var after = before
+                while (after <= before && waited < 10) {
+                    Thread.sleep(500)
+                    waited++
+                    val f = rootInActiveWindow
+                    if (f != null) {
+                        cur = f
+                        after = countRows(cur)
+                    }
+                }
+                if (after <= before) {
+                    DriverSession.fillDebug = "প্লাস চাপা গেল কিন্তু রো বাড়েনি"
                     return false
                 }
-                cur = fresh
             }
             if (countRows(cur) <= i) {
                 DriverSession.fillDebug = "রো ${i + 1} বানানো যায়নি"
@@ -423,6 +446,53 @@ class CockpitAccessibilityService : AccessibilityService() {
             r.top
         } catch (_: Exception) {
             0
+        }
+    }
+
+    /** v25: শেষের রো-র "−" বাটন চেপে ওই রো সরায়। */
+    private fun tapMinusOnLastRow(root: AccessibilityNodeInfo): Boolean {
+        val minuses = ArrayList<AccessibilityNodeInfo>()
+        fun walk(n: AccessibilityNodeInfo?) {
+            if (n == null) return
+            try {
+                val t = n.text?.toString()?.trim().orEmpty()
+                if (t == "−" || t == "-") minuses.add(n)
+                for (i in 0 until n.childCount) walk(n.getChild(i))
+            } catch (_: Exception) { }
+        }
+        walk(root)
+        if (minuses.isEmpty()) return false
+        val target = minuses.maxByOrNull { boundsTop(it) } ?: return false
+        var c: AccessibilityNodeInfo? = target
+        repeat(6) {
+            val cur = c ?: return@repeat
+            if (cur.isClickable) {
+                return cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
+            c = cur.parent
+        }
+        val r = Rect()
+        return try {
+            target.getBoundsInScreen(r)
+            if (!r.isEmpty) tapAt(r.centerX().toFloat(), r.centerY().toFloat()) else false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** v25: রো-র দুটো ফিল্ডই খালি কিনা। */
+    private fun isRowEmpty(
+        numbers: List<AccessibilityNodeInfo>,
+        amounts: List<AccessibilityNodeInfo>,
+        idx: Int
+    ): Boolean {
+        if (idx >= numbers.size || idx >= amounts.size) return true
+        return try {
+            val n = numbers[idx].text?.toString().orEmpty()
+            val a = amounts[idx].text?.toString().orEmpty()
+            digitsOnly(n).isEmpty() && digitsOnly(a).isEmpty()
+        } catch (_: Exception) {
+            true
         }
     }
 
