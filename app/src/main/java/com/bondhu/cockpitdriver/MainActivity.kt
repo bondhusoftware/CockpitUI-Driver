@@ -20,6 +20,7 @@ class MainActivity : Activity() {
     private lateinit var phoneInput: EditText
     private lateinit var amountInput: EditText
     private lateinit var bulkInput: EditText
+    private lateinit var plAmountsInput: EditText
     private lateinit var cockpitIdInput: EditText
     private lateinit var cockpitPasswordInput: EditText
     private lateinit var ersPinInput: EditText
@@ -113,6 +114,17 @@ class MainActivity : Activity() {
         }
         root.addView(bulkInput, lp())
 
+        // v26: পাওয়ারলোড পরিমাণ — কমা দিয়ে (যেমন: 19, 29, 98)
+        val plLabel = TextView(this).apply {
+            text = "পাওয়ারলোড পরিমাণ (কমা দিয়ে — যেমন: 19, 29, 98)"
+            textSize = 14f
+            setPadding(0, 10, 0, 2)
+        }
+        root.addView(plLabel, lp())
+
+        plAmountsInput = field("19, 29, 98", InputType.TYPE_CLASS_TEXT)
+        root.addView(plAmountsInput, lp())
+
         runButton = Button(this).apply {
             text = "RUN RECHARGE"
             setOnClickListener { startDriver() }
@@ -192,6 +204,7 @@ class MainActivity : Activity() {
         cockpitIdInput.setText(SecureStore.get(this, "cockpit_id"))
         cockpitPasswordInput.setText(SecureStore.get(this, "cockpit_password"))
         ersPinInput.setText(SecureStore.get(this, "ers_pin"))
+        plAmountsInput.setText(SecureStore.get(this, "pl_amounts"))
     }
 
     private fun saveCredentials() {
@@ -204,6 +217,23 @@ class MainActivity : Activity() {
         SecureStore.put(this, "cockpit_id", cockpitIdInput.text.toString())
         SecureStore.put(this, "cockpit_password", cockpitPasswordInput.text.toString())
         SecureStore.put(this, "ers_pin", ersPinInput.text.toString())
+        // v26: PL পরিমাণ সবসময় সেভ থাকবে (remember unchecked হলেও)
+        SecureStore.put(this, "pl_amounts", plAmountsInput.text.toString())
+    }
+
+    /** v26: "19, 29, 98" → {"19","29","98"} */
+    private fun parsePlAmounts(text: String): Set<String> {
+        return text.split(Regex("[,;\\s]+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && (it.toDoubleOrNull() ?: 0.0) > 0 }
+            .map { normalizeAmount(it) }
+            .toSet()
+    }
+
+    /** v26: "98.0" → "98" — PL ম্যাচিং-এর জন্য */
+    private fun normalizeAmount(a: String): String {
+        val d = a.toDoubleOrNull() ?: return a.trim()
+        return if (d == d.toLong().toDouble()) d.toLong().toString() else a.trim()
     }
 
     private fun startDriver() {
@@ -237,7 +267,8 @@ class MainActivity : Activity() {
         }
 
         saveCredentials()
-        DriverSession.startBulk(requests)
+        val plAmounts = parsePlAmounts(plAmountsInput.text.toString())
+        DriverSession.startBulk(requests, plAmounts)
 
         val launch = findCockpitLaunchIntent()
         if (launch == null) {
@@ -318,10 +349,14 @@ class MainActivity : Activity() {
         renderLog()
     }
 
-    /** v19: নিচে লগ — নম্বরের পাশে স্ট্যাটাস (আপডেট হয়েছে কিনা দেখা যায়)। */
+    /** v19: নিচে লগ — নম্বরের পাশে স্ট্যাটাস (আপডেট হয়েছে কিনা দেখা যায়)।
+     *  v26: মাস্টার লিস্ট — সব ব্যাচের রিকোয়েস্ট একসাথে। */
     private fun renderLog() {
         logList.removeAllViews()
-        val reqs = DriverSession.queue
+        // v26: মাস্টার ব্যবহার করো (না থাকলে কারেন্ট queue)
+        val reqs = DriverSession.masterRequests.ifEmpty { DriverSession.queue }
+        val sts = DriverSession.masterStatuses.ifEmpty { DriverSession.statuses }
+        val dets = DriverSession.masterDetails.ifEmpty { DriverSession.statusDetails }
         if (reqs.isEmpty()) {
             logList.addView(TextView(this).apply {
                 text = "এখনো কোনো রিকোয়েস্ট নেই"
@@ -332,7 +367,9 @@ class MainActivity : Activity() {
         }
         for (i in reqs.indices) {
             val req = reqs[i]
-            val st = DriverSession.statuses.getOrNull(i).orEmpty().ifBlank { "—" }
+            val st = sts.getOrNull(i).orEmpty().ifBlank { "—" }
+            // v26: PL রিকোয়েস্টে ⚡ চিহ্ন
+            val plMark = if (DriverSession.isPlAmount(req.amount)) " ⚡" else ""
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 setPadding(4, 12, 4, 12)
@@ -340,7 +377,7 @@ class MainActivity : Activity() {
                 isFocusable = true
             }
             val numTv = TextView(this).apply {
-                text = "${req.phone}  •  ${req.amount} TK"
+                text = "${req.phone}  •  ${req.amount} TK$plMark"
                 textSize = 16f
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             }
@@ -351,7 +388,19 @@ class MainActivity : Activity() {
             }
             row.addView(numTv)
             row.addView(stTv)
-            row.setOnClickListener { showLogDetail(i) }
+            val det = dets.getOrNull(i).orEmpty()
+            row.setOnClickListener {
+                val msg = StringBuilder()
+                    .append("নম্বর: ${req.phone}\n")
+                    .append("পরিমাণ: ${req.amount} TK$plMark\n")
+                    .append("স্ট্যাটাস: $st\n")
+                if (det.isNotBlank()) msg.append("বিস্তারিত: $det")
+                AlertDialog.Builder(this)
+                    .setTitle("📝 লগ")
+                    .setMessage(msg.toString())
+                    .setPositiveButton("ঠিক আছে", null)
+                    .show()
+            }
             logList.addView(row)
             logList.addView(View(this).apply {
                 setBackgroundColor(Color.rgb(230, 230, 230))
@@ -362,11 +411,14 @@ class MainActivity : Activity() {
         }
     }
 
-    /** v19: লগের রো-তে ক্লিক করলে বিস্তারিত দেখায়। */
+    /** v19: লগের রো-তে ক্লিক করলে বিস্তারিত দেখায়। (v26: renderLog-এ inline) */
     private fun showLogDetail(i: Int) {
-        val req = DriverSession.queue.getOrNull(i) ?: return
-        val st = DriverSession.statuses.getOrNull(i).orEmpty().ifBlank { "—" }
-        val det = DriverSession.statusDetails.getOrNull(i).orEmpty()
+        val req = DriverSession.masterRequests.getOrNull(i)
+            ?: DriverSession.queue.getOrNull(i) ?: return
+        val st = (DriverSession.masterStatuses.getOrNull(i)
+            ?: DriverSession.statuses.getOrNull(i)).orEmpty().ifBlank { "—" }
+        val det = (DriverSession.masterDetails.getOrNull(i)
+            ?: DriverSession.statusDetails.getOrNull(i)).orEmpty()
         val msg = StringBuilder()
             .append("নম্বর: ${req.phone}\n")
             .append("পরিমাণ: ${req.amount} TK\n")

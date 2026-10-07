@@ -76,12 +76,22 @@ class CockpitAccessibilityService : AccessibilityService() {
         val onDashboard = containsAny(root, listOf("পরবর্তী")) &&
             containsAny(root, listOf("পাওয়ারলোড", "ফ্লেক্সিরিটেইল"))
         if (onDashboard) {
-            // v18: বাল্ক শেষে OK চেপে হোমে ফিরে এলে এখানেই সম্পন্ন।
+            // v26: ব্যাচ শেষে OK চেপে হোমে ফিরে এলে — পরের ব্যাচ থাকলে শুরু করো
             if (DriverSession.successCounted) {
-                val total = DriverSession.totalCount
-                val msg = if (total > 1) "🎉 বাল্ক রিচার্জ সম্পন্ন (${total}টি)" else "🎉 রিচার্জ সম্পন্ন"
-                DriverSession.stop(msg)
-                showToast(msg)
+                if (DriverSession.hasMoreBatches()) {
+                    DriverSession.nextBatch()
+                    // নতুন ব্যাচের ফিল-এ যাও (নিচে fall through)
+                } else {
+                    val total = DriverSession.masterRequests.size
+                    val msg = if (total > 1) "🎉 সব রিচার্জ সম্পন্ন (${total}টি)" else "🎉 রিচার্জ সম্পন্ন"
+                    DriverSession.stop(msg)
+                    showToast(msg)
+                    return
+                }
+            }
+            // v26: PL ব্যাচ হলে পাওয়ারলোড ফ্লো
+            if (DriverSession.isPlBatch && !DriverSession.plOfferNotFound) {
+                handlePlDashboard(root)
                 return
             }
             // ডায়াগনস্টিকের জন্য স্ক্রিনের node ডাম্প সংরক্ষণ করা হয়।
@@ -278,6 +288,90 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
 
         return phoneSet && amountSet
+    }
+
+    /**
+     * v26: PL ড্যাশবোর্ড ফ্লো —
+     * stage 0: নম্বর+পরিমাণ বসাও → stage 1
+     * stage 1: পাওয়ারলোড বাটন চাপো → stage 2
+     * stage 2: দাম মিলিয়ে অফারে ট্যাপ করো (না পেলে "সব পি.এল" ট্যাব, তাও না পেলে normal flow)
+     * stage 3+: অফার সিলেক্ট — standard flow (পরবর্তী → PIN → নিশ্চিত)
+     */
+    private fun handlePlDashboard(root: AccessibilityNodeInfo) {
+        DriverSession.lastNodeDump = captureNodeDump(root)
+        when (DriverSession.plStage) {
+            0 -> {
+                if (!fillRechargeFields(root)) {
+                    DriverSession.fillAttempts++
+                    if (DriverSession.fillAttempts > 8) {
+                        val dbg8 = DriverSession.fillDebug
+                        DriverSession.stop(
+                            "ফিল্ডে বসানো যাচ্ছে না — manually চেক করুন" +
+                                (if (dbg8.isNotBlank()) " [$dbg8]" else "")
+                        )
+                        return
+                    }
+                    DriverSession.state = DriverState.ENTERING_AMOUNT
+                    DriverSession.lastMessage = "⚡ নম্বর ও পরিমাণ বসানো হচ্ছে" +
+                        (if (DriverSession.fillDebug.isNotBlank()) " [${DriverSession.fillDebug}]" else "")
+                    handler.postDelayed({ drive() }, 900)
+                    return
+                }
+                DriverSession.fillAttempts = 0
+                DriverSession.setAllStatus("🔄 চলছে")
+                DriverSession.plStage = 1
+                DriverSession.lastMessage = "⚡ পাওয়ারলোড বাটন চাপা হচ্ছে"
+                handler.postDelayed({ drive() }, 700)
+                return
+            }
+            1 -> {
+                if (clickText(root, listOf("পাওয়ারলোড"))) {
+                    DriverSession.plStage = 2
+                    DriverSession.lastMessage = "⚡ অফার খোঁজা হচ্ছে"
+                } else {
+                    DriverSession.fillDebug = "পাওয়ারলোড বাটন পাওয়া যায়নি"
+                    DriverSession.lastMessage = "⚡ পাওয়ারলোড বাটন পাওয়া যায়নি — আবার চেষ্টা"
+                }
+                handler.postDelayed({ drive() }, 1500)
+                return
+            }
+            2 -> {
+                val amount = DriverSession.amount
+                if (tapOfferWithPrice(root, amount)) {
+                    DriverSession.plStage = 3
+                    DriverSession.lastMessage = "⚡ অফার সিলেক্ট হয়েছে — পরের পেজের অপেক্ষায়"
+                    handler.postDelayed({ drive() }, 1500)
+                    return
+                }
+                // অফার পাওয়া যায়নি — "সব পি.এল" ট্যাবে দেখো
+                if (tapAllPlTab(root)) {
+                    DriverSession.lastMessage = "⚡ সব পাওয়ারলোড অফার দেখা হচ্ছে"
+                    handler.postDelayed({ drive() }, 1500)
+                    return
+                }
+                // তাও না পেলে normal flow-তে ফিরে যাও (সরাসরি পরবর্তী)
+                DriverSession.plOfferNotFound = true
+                DriverSession.isPlBatch = false
+                DriverSession.lastMessage = "⚡ অফার পাওয়া যায়নি — normal রিচার্জ হচ্ছে"
+                handler.postDelayed({ drive() }, 700)
+                return
+            }
+            else -> {
+                // stage 3+: অফার সিলেক্ট হয়ে গেছে — standard flow
+                // (এখানে এলে dashboard-এ ফিরে এসেছে, পরবর্তী চাপো)
+                if (DriverSession.nextAttempts >= 3) {
+                    DriverSession.stop("পরবর্তী চাপা যায়নি — manually চাপুন")
+                    return
+                }
+                DriverSession.state = DriverState.TAP_NEXT
+                DriverSession.lastMessage = "⚡ পরবর্তী চাপা হচ্ছে"
+                if (clickText(root, listOf("পরবর্তী"))) {
+                    DriverSession.nextAttempts++
+                }
+                handler.postDelayed({ drive() }, 900)
+                return
+            }
+        }
     }
 
     /**
@@ -496,9 +590,46 @@ class CockpitAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * v26: পাওয়ারলোড — "৳" দাম খুঁজে হুবহু মিলিয়ে অফার কার্ডে ট্যাপ করে।
+     * দাম বাংলা ডিজিটে থাকতে পারে (যেমন "৳ ৯৮") — digitsOnly দুটোই হ্যান্ডেল করে।
+     */
+    private fun tapOfferWithPrice(root: AccessibilityNodeInfo, amount: String): Boolean {
+        val want = digitsOnly(amount)
+        if (want.isEmpty()) return false
+        val priceNodes = ArrayList<AccessibilityNodeInfo>()
+        collectWithText(root, "৳", priceNodes)
+        for (pn in priceNodes) {
+            try {
+                pn.refresh()
+                val priceText = pn.text?.toString().orEmpty()
+                if (digitsOnly(priceText) != want) continue
+                // দাম মিলেছে — কার্ডটা (clickable ancestor) খুঁজে ট্যাপ করো
+                var c: AccessibilityNodeInfo? = pn
+                repeat(8) {
+                    val cur = c ?: return@repeat
+                    if (cur.isClickable) {
+                        if (cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                        return@repeat
+                    }
+                    c = cur.parent
+                }
+                // clickable ancestor না পেলে gesture-এ ট্যাপ
+                val r = Rect()
+                pn.getBoundsInScreen(r)
+                if (!r.isEmpty && tapAt(r.centerX().toFloat(), r.centerY().toFloat())) return true
+            } catch (_: Exception) { }
+        }
+        return false
+    }
+
+    /** v26: "সব পি.এল" ট্যাবে সব পাওয়ারলোড অফার দেখায়। */
+    private fun tapAllPlTab(root: AccessibilityNodeInfo): Boolean {
+        return clickText(root, listOf("সব পি.এল", "সব পি এল"))
+    }
+
     /** v22: "+" বাটন চেপে নতুন রো নেয় — text, content-desc, তারপর gesture। */
-    private fun tapPlusButton(root: AccessibilityNodeInfo): Boolean {
-        val btn = findButtonByExactText(root, "+")
+    private fun tapPlusButton(root: AccessibilityNodeInfo): Boolean {        val btn = findButtonByExactText(root, "+")
         if (btn != null && btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
         // content-desc-এ "+" বা "add" থাকলে (ImageButton ধরনের বাটন)
         val byDesc = findClickableByDesc(root, listOf("+", "add"))
@@ -806,9 +937,11 @@ class CockpitAccessibilityService : AccessibilityService() {
     private fun confirmAmountMatches(root: AccessibilityNodeInfo, amount: String): Boolean {
         val want = digitsOnly(amount)
         if (want.isEmpty()) return false
-        val tkNodes = ArrayList<AccessibilityNodeInfo>()
-        collectWithText(root, "TK", tkNodes)
-        for (n in tkNodes) {
+        val priceNodes = ArrayList<AccessibilityNodeInfo>()
+        // v26: "TK" বা "৳" — দুটোই দামের চিহ্ন হতে পারে
+        collectWithText(root, "TK", priceNodes)
+        collectWithText(root, "৳", priceNodes)
+        for (n in priceNodes) {
             try {
                 n.refresh()
                 if (digitsOnly(n.text?.toString().orEmpty()) == want) return true
