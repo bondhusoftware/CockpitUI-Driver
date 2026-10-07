@@ -42,6 +42,7 @@ object DriverSession {
     @Volatile var isPlBatch: Boolean = false
     @Volatile var plStage: Int = 0
     @Volatile var plOfferNotFound: Boolean = false
+    @Volatile var plWaitCount: Int = 0
 
     val totalCount: Int get() = queue.size
 
@@ -137,6 +138,7 @@ object DriverSession {
         isPlBatch = isPl
         plStage = 0
         plOfferNotFound = false
+        plWaitCount = 0
         val first = reqs.firstOrNull()
         phone = first?.phone.orEmpty()
         amount = first?.amount.orEmpty()

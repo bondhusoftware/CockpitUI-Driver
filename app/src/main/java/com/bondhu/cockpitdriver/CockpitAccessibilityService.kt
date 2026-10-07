@@ -325,18 +325,38 @@ class CockpitAccessibilityService : AccessibilityService() {
                 return
             }
             1 -> {
-                if (clickText(root, listOf("পাওয়ারলোড"))) {
+                // v26: gesture ট্যাপ (performAction শুধু ফোকাস করে)
+                if (tapPowerloadButton(root)) {
                     DriverSession.plStage = 2
-                    DriverSession.lastMessage = "⚡ অফার খোঁজা হচ্ছে"
+                    DriverSession.lastMessage = "⚡ অফার লিস্ট আসছে — অপেক্ষা"
                 } else {
                     DriverSession.fillDebug = "পাওয়ারলোড বাটন পাওয়া যায়নি"
                     DriverSession.lastMessage = "⚡ পাওয়ারলোড বাটন পাওয়া যায়নি — আবার চেষ্টা"
                 }
-                handler.postDelayed({ drive() }, 1500)
+                handler.postDelayed({ drive() }, 2000)
                 return
             }
             2 -> {
                 val amount = DriverSession.amount
+                // v26: অফার লিস্ট এসেছে কিনা দেখো (৳ বা ট্যাব আছে কিনা)
+                val hasOfferList = containsAny(root, listOf("৳")) ||
+                    containsAny(root, listOf("সব পি.এল", "ডাটা", "বান্ডেল"))
+                if (!hasOfferList) {
+                    // লিস্ট এখনো আসেনি — একটু অপেক্ষা করো (সর্বোচ্চ ~৮ সেকেন্ড)
+                    DriverSession.plWaitCount++
+                    if (DriverSession.plWaitCount > 5) {
+                        // তাও না এলে normal flow-তে ফিরে যাও
+                        DriverSession.plOfferNotFound = true
+                        DriverSession.isPlBatch = false
+                        DriverSession.lastMessage = "⚡ অফার লিস্ট আসেনি — normal রিচার্জ হচ্ছে"
+                        handler.postDelayed({ drive() }, 700)
+                        return
+                    }
+                    DriverSession.lastMessage = "⚡ অফার লিস্টের অপেক্ষায়…"
+                    handler.postDelayed({ drive() }, 1500)
+                    return
+                }
+                DriverSession.plWaitCount = 0
                 if (tapOfferWithPrice(root, amount)) {
                     DriverSession.plStage = 3
                     DriverSession.lastMessage = "⚡ অফার সিলেক্ট হয়েছে — পরের পেজের অপেক্ষায়"
@@ -626,6 +646,30 @@ class CockpitAccessibilityService : AccessibilityService() {
     /** v26: "সব পি.এল" ট্যাবে সব পাওয়ারলোড অফার দেখায়। */
     private fun tapAllPlTab(root: AccessibilityNodeInfo): Boolean {
         return clickText(root, listOf("সব পি.এল", "সব পি এল"))
+    }
+
+    /**
+     * v26: পাওয়ারলোড বাটনে gesture ট্যাপ।
+     * (clickText-এর performAction শুধু ফোকাস করে, বাটন অ্যাক্টিভেট করে না —
+     *  তাই সরাসরি gesture ট্যাপ।)
+     */
+    private fun tapPowerloadButton(root: AccessibilityNodeInfo): Boolean {
+        val node = findNodeByText(root, "পাওয়ারলোড") ?: return false
+        var target: AccessibilityNodeInfo = node
+        var c: AccessibilityNodeInfo? = node
+        repeat(6) {
+            val cur = c ?: return@repeat
+            if (cur.isClickable) target = cur
+            c = cur.parent
+        }
+        val r = Rect()
+        try {
+            target.getBoundsInScreen(r)
+        } catch (_: Exception) {
+            return false
+        }
+        if (r.isEmpty) return false
+        return tapAt(r.centerX().toFloat(), r.centerY().toFloat())
     }
 
     /** v22: "+" বাটন চেপে নতুন রো নেয় — text, content-desc, তারপর gesture। */
