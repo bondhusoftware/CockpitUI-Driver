@@ -649,22 +649,15 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v26: পাওয়ারলোড বাটনে gesture ট্যাপ।
-     * (clickText-এর performAction শুধু ফোকাস করে, বাটন অ্যাক্টিভেট করে না —
-     *  তাই সরাসরি gesture ট্যাপ।)
+     * v28: পাওয়ারলোড বাটনে ট্যাপ — টেক্সট নোডের bounds-এ সরাসরি gesture।
+     * (v27-এর বাগ: outermost clickable ancestor-এর center-এ ট্যাপ যাচ্ছিল,
+     *  যা বাটনের বাইরে পড়তে পারে। টেক্সট বাটনের ভেতরেই থাকে।)
      */
     private fun tapPowerloadButton(root: AccessibilityNodeInfo): Boolean {
         val node = findNodeByText(root, "পাওয়ারলোড") ?: return false
-        var target: AccessibilityNodeInfo = node
-        var c: AccessibilityNodeInfo? = node
-        repeat(6) {
-            val cur = c ?: return@repeat
-            if (cur.isClickable) target = cur
-            c = cur.parent
-        }
         val r = Rect()
         try {
-            target.getBoundsInScreen(r)
+            node.getBoundsInScreen(r)
         } catch (_: Exception) {
             return false
         }
