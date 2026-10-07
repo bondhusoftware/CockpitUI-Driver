@@ -1124,11 +1124,30 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v32: অফার লিস্ট নিচে স্ক্রল করো।
-     * সবচেয়ে বড় scrollable node-টা খুঁজো (অফার লিস্ট — ট্যাব বার নয়),
-     * তারপর ACTION_SCROLL_FORWARD; না হলে ওই node-এর মাঝে swipe।
+     * v33: অফার লিস্ট নিচে স্ক্রল করো।
+     * দামের (৳) নোড থেকে উপরে গিয়ে scrollable ancestor খুঁজো — সেটাই আসল লিস্ট।
+     * তারপর ACTION_SCROLL_FORWARD; না হলে সরাসরি swipe।
      */
     private fun scrollOfferList(root: AccessibilityNodeInfo): Boolean {
+        // ১. দামের নোড খুঁজে তার scrollable ancestor বের করো
+        val priceNode = findNodeByText(root, "৳")
+        if (priceNode != null) {
+            var p: AccessibilityNodeInfo? = priceNode.parent
+            var depth = 0
+            while (p != null && depth < 10) {
+                try {
+                    if (p.isScrollable) {
+                        if (p.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                            return true
+                        }
+                        break
+                    }
+                } catch (_: Exception) { }
+                p = try { p.parent } catch (_: Exception) { null }
+                depth++
+            }
+        }
+        // ২. সবচেয়ে বড় scrollable-এ চেষ্টা করো
         val scrollable = findLargestScrollable(root)
         if (scrollable != null) {
             try {
@@ -1136,35 +1155,19 @@ class CockpitAccessibilityService : AccessibilityService() {
                     return true
                 }
             } catch (_: Exception) { }
-            // ওই লিস্টের ভেতরে swipe
-            try {
-                val r = android.graphics.Rect()
-                scrollable.getBoundsInScreen(r)
-                if (!r.isEmpty) {
-                    val x = r.centerX().toFloat()
-                    val y1 = (r.top + (r.height() * 0.75)).toFloat()
-                    val y2 = (r.top + (r.height() * 0.25)).toFloat()
-                    val path = android.graphics.Path().apply {
-                        moveTo(x, y1)
-                        lineTo(x, y2)
-                    }
-                    val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 350)
-                    val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
-                    if (dispatchGesture(gesture, null, null)) return true
-                }
-            } catch (_: Exception) { }
         }
-        // Fallback: স্ক্রিনের মাঝে নিচ থেকে উপরে swipe
+        // ৩. সরাসরি swipe — অফার এরিয়ার মাঝখানে, লম্বা swipe
         return try {
             val metrics = resources.displayMetrics
             val x = (metrics.widthPixels / 2).toFloat()
-            val y1 = (metrics.heightPixels * 0.75).toFloat()
-            val y2 = (metrics.heightPixels * 0.25).toFloat()
+            // অফার লিস্ট স্ক্রিনের মাঝামাঝি — নিচের 65% থেকে উপরের 35%-এ
+            val y1 = (metrics.heightPixels * 0.65).toFloat()
+            val y2 = (metrics.heightPixels * 0.35).toFloat()
             val path = android.graphics.Path().apply {
                 moveTo(x, y1)
                 lineTo(x, y2)
             }
-            val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 350)
+            val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 500)
             val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
             dispatchGesture(gesture, null, null)
         } catch (_: Exception) {
