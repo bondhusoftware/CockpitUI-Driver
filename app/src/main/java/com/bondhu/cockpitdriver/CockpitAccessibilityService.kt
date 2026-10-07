@@ -1124,31 +1124,11 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v33: অফার লিস্ট নিচে স্ক্রল করো।
-     * দামের (৳) নোড থেকে উপরে গিয়ে scrollable ancestor খুঁজো — সেটাই আসল লিস্ট।
-     * তারপর ACTION_SCROLL_FORWARD; না হলে সরাসরি swipe।
+     * v34: অফার লিস্ট নিচে স্ক্রল করো — v30-এর পদ্ধতি (যেটা কাজ করতো)।
+     * প্রথম scrollable node-এ ACTION_SCROLL_FORWARD, না হলে swipe।
      */
     private fun scrollOfferList(root: AccessibilityNodeInfo): Boolean {
-        // ১. দামের নোড খুঁজে তার scrollable ancestor বের করো
-        val priceNode = findNodeByText(root, "৳")
-        if (priceNode != null) {
-            var p: AccessibilityNodeInfo? = priceNode.parent
-            var depth = 0
-            while (p != null && depth < 10) {
-                try {
-                    if (p.isScrollable) {
-                        if (p.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
-                            return true
-                        }
-                        break
-                    }
-                } catch (_: Exception) { }
-                p = try { p.parent } catch (_: Exception) { null }
-                depth++
-            }
-        }
-        // ২. সবচেয়ে বড় scrollable-এ চেষ্টা করো
-        val scrollable = findLargestScrollable(root)
+        val scrollable = findScrollableNode(root)
         if (scrollable != null) {
             try {
                 if (scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
@@ -1156,11 +1136,10 @@ class CockpitAccessibilityService : AccessibilityService() {
                 }
             } catch (_: Exception) { }
         }
-        // ৩. সরাসরি swipe — অফার এরিয়ার মাঝখানে, লম্বা swipe
+        // Fallback: স্ক্রিনের মাঝে নিচ থেকে উপরে swipe
         return try {
             val metrics = resources.displayMetrics
             val x = (metrics.widthPixels / 2).toFloat()
-            // অফার লিস্ট স্ক্রিনের মাঝামাঝি — নিচের 65% থেকে উপরের 35%-এ
             val y1 = (metrics.heightPixels * 0.65).toFloat()
             val y2 = (metrics.heightPixels * 0.35).toFloat()
             val path = android.graphics.Path().apply {
