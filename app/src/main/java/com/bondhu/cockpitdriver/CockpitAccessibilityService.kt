@@ -1124,31 +1124,33 @@ class CockpitAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * v34: অফার লিস্ট নিচে স্ক্রল করো — v30-এর পদ্ধতি (যেটা কাজ করতো)।
-     * প্রথম scrollable node-এ ACTION_SCROLL_FORWARD, না হলে swipe।
+     * v35: জোরালো স্ক্রল — 3 বার swipe, ভিন্ন ভিন্ন পজিশনে।
+     * (scrollable node খোঁজা বাদ — সরাসরি gesture।)
      */
     private fun scrollOfferList(root: AccessibilityNodeInfo): Boolean {
-        val scrollable = findScrollableNode(root)
-        if (scrollable != null) {
-            try {
-                if (scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
-                    return true
-                }
-            } catch (_: Exception) { }
-        }
-        // Fallback: স্ক্রিনের মাঝে নিচ থেকে উপরে swipe
         return try {
             val metrics = resources.displayMetrics
             val x = (metrics.widthPixels / 2).toFloat()
-            val y1 = (metrics.heightPixels * 0.65).toFloat()
-            val y2 = (metrics.heightPixels * 0.35).toFloat()
-            val path = android.graphics.Path().apply {
-                moveTo(x, y1)
-                lineTo(x, y2)
+            var ok = false
+            // 3টা swipe — মাঝখান, একটু নিচে, একটু উপরে
+            val swipes = listOf(
+                0.70f to 0.30f,
+                0.75f to 0.35f,
+                0.65f to 0.25f
+            )
+            for ((s, e) in swipes) {
+                val y1 = (metrics.heightPixels * s).toFloat()
+                val y2 = (metrics.heightPixels * e).toFloat()
+                val path = android.graphics.Path().apply {
+                    moveTo(x, y1)
+                    lineTo(x, y2)
+                }
+                val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 600)
+                val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
+                if (dispatchGesture(gesture, null, null)) ok = true
+                try { Thread.sleep(400) } catch (_: Exception) { }
             }
-            val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 500)
-            val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
-            dispatchGesture(gesture, null, null)
+            ok
         } catch (_: Exception) {
             false
         }
